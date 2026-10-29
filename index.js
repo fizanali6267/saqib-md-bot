@@ -233,7 +233,17 @@ const acquireInstanceLock = () => {
       const pid = parseInt(raw, 10);
       if (pid && pid !== process.pid) {
         let alive = false;
-        try { process.kill(pid, 0); alive = true; } catch (_) { alive = false; }
+        try {
+          process.kill(pid, 0);
+          alive = true;
+        } catch (_) { alive = false; }
+        // Guard against pid reuse: only trust the lock if that pid is node.
+        if (alive) {
+          try {
+            const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+            if (cmd && !cmd.includes('node')) alive = false;
+          } catch (_) { /* /proc unavailable — trust kill(0) */ }
+        }
         if (alive) {
           console.log(`⛔ Another instance is already running (pid ${pid}). Exiting to protect the WhatsApp session.`);
           process.exit(0);
