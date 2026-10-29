@@ -16,19 +16,26 @@ const {
 // Baileys 6.7.x ships a stray console.log in its Signal layer that dumps whole
 // SessionEntry objects (including private keys) to stdout. On a 100-line log
 // buffer that noise wipes out real startup/error lines, so we drop those calls.
-const __originalConsoleLog = console.log.bind(console);
 const __NOISE_PATTERNS = [
-  'Removing old closed session',
+  'Removing old closed session', // libsignal/src/session_record.js:301 (console.info)
   'Closing open session',
   'Closing session:',
   'Session already closed'
 ];
-console.log = (...args) => {
+const __isNoise = (args) => {
   try {
-    if (typeof args[0] === 'string' && __NOISE_PATTERNS.some((p) => args[0].includes(p))) return;
-  } catch (_) {}
-  __originalConsoleLog(...args);
+    return typeof args[0] === 'string' && __NOISE_PATTERNS.some((p) => args[0].includes(p));
+  } catch (_) {
+    return false;
+  }
 };
+for (const __level of ['log', 'info', 'debug']) {
+  const __orig = console[__level].bind(console);
+  console[__level] = (...args) => {
+    if (__isNoise(args)) return;
+    __orig(...args);
+  };
+}
 
 // Issue 7 Fix: Global unhandled rejection and uncaught exception handlers prevent process crash
 process.on('unhandledRejection', (err) => {
