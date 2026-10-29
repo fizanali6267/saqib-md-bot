@@ -109,6 +109,7 @@ process.on('uncaughtException', (err) => {
 
 const config = require('./config');
 const { serialize } = require('./lib/serialize');
+const lid = require('./lib/lid');
 const { useMongoDBAuthState } = require('./lib/mongoAuth');
 const { useFastAuthState } = require('./lib/fastAuthState');
 const { resolveAlias } = require('./lib/aliasMap');
@@ -303,6 +304,9 @@ async function startBot() {
   // Bind the official store to the socket's event stream (message tracking)
   try { if (store) store.bind(sock.ev); } catch (_) {}
 
+  // Learn LID -> phone-number pairs from contacts, history and group members.
+  try { lid.bind(sock); } catch (_) {}
+
   currentSock = sock;
   clearTimeout(guardTimer);
   isStarting = false; // socket built — release the creation guard
@@ -361,6 +365,15 @@ async function startBot() {
     } else if (connection === 'open') {
       console.log(`✨ ${config.BOT_NAME} connected and ready to serve!`);
 
+      // Remember our own LID <-> phone pair (needed for self-chat replies).
+      try {
+        if (sock.user?.id) {
+          if (sock.user.lid) lid.addPair(sock.user.lid, sock.user.id);
+          else if (sock.user.id.endsWith('@lid')) lid.addPair(sock.user.id, sock.user.id.split(':')[0]);
+        }
+        console.log(`🔗 LID map: ${lid.size()} pairs known`);
+      } catch (_) {}
+
       // Always Online Heartbeat Loop (Cleaned up on reconnect)
       if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
       onlinePresenceInterval = setInterval(async () => {
@@ -415,8 +428,13 @@ async function startBot() {
       // "Waiting for this message. This may take a while."
       if (m.chat && m.chat.endsWith('@lid')) {
         try {
-          const pn = await sock.signalRepository?.lidMapping?.getPNForLID?.(m.chat);
-          if (pn) m.chat = pn;
+          const pn = lid.resolve(m.chat) || await lid.probe(sock, m.chat);
+          if (pn) {
+            m.chat = pn;
+            console.log(`🔗 LID ${m.rawChat} -> ${pn}`);
+          } else {
+            console.log(`⚠️  Unknown LID ${m.chat} (reply may not decrypt)`);
+          }
         } catch (_) {}
       }
 
@@ -515,7 +533,7 @@ async function startBot() {
         const isSenderAdmin = groupMeta?.participants.find(p => p.id === m.sender)?.admin || m.fromMe;
 
         if (!isSenderAdmin && isBotAdmin) {
-          await sock.sendMessage(m.chat, { delete: m.key });
+          await sock.sendMessage(m.chat, { delete: (m.rawKey || m.key) });
           await sock.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
           await sock.sendMessage(m.chat, {
             text: `🚫 @${m.sender.split('@')[0]} was removed for sending WhatsApp group links!`,
@@ -532,7 +550,7 @@ async function startBot() {
         const bodyLower = m.body.toLowerCase();
         if (BAD_WORDS.some(bw => new RegExp(`\\b${bw}\\b`, 'i').test(bodyLower))) {
           try {
-            await sock.sendMessage(m.chat, { delete: m.key });
+            await sock.sendMessage(m.chat, { delete: (m.rawKey || m.key) });
             await sock.sendMessage(m.chat, {
               text: `⚠️ @${m.sender.split('@')[0]}, foul/abusive language is strictly prohibited in this group!`,
               mentions: [m.sender]
@@ -614,6 +632,7 @@ async function startBot() {
           // FIRE-AND-FORGET: run the command without blocking the message loop,
           // so one slow command can never stall the next .menu / command.
           plugin.execute(sock, m, { command, args, prefix: config.PREFIX })
+            .then(() => { try { config.persistSettings?.(); } catch (_) {} })
             .catch(async (err) => {
               console.error(`Error in command ${command}:`, err);
               try { await m.reply(config.MESSAGES.ERROR + `\n_${err.message}_`); } catch (_) {}

@@ -128,3 +128,58 @@ const checkIsOwner = (m, sock) => {
 
 module.exports.getOwnerJid = getOwnerJid;
 module.exports.checkIsOwner = checkIsOwner;
+
+// ---------------------------------------------------------------------------
+// Runtime settings persistence
+// ---------------------------------------------------------------------------
+// Toggles such as `.autoreact all`, `.antidelete inbox`, `.autovv on` used to
+// live only in RAM, so every restart / redeploy silently reverted them to the
+// .env defaults. From the user's side the command "turned on" but the feature
+// stopped working. We now persist them to data/settings.json and reload on boot.
+const path = require('path');
+const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
+const PERSISTED_KEYS = [
+  'PREFIX', 'WORK_TYPE',
+  'AUTO_REACT', 'AUTO_REACT_MODE', 'AI_REACT',
+  'AUTO_READ', 'ALWAYS_ONLINE', 'AUTO_BIO',
+  'ANTI_DELETE', 'ANTI_DELETE_MODE',
+  'ANTI_VIEW_ONCE', 'AUTO_VIEW_ONCE',
+  'AUTO_STATUS_READ', 'AUTO_STATUS_REACT', 'STATUS_REACT_EMOJI',
+  'ANTI_BADWORD', 'ANTI_CALL', 'ANTI_LINK',
+  'CHATBOT_PM', 'CHATBOT_GROUP'
+];
+
+const loadSettings = () => {
+  try {
+    const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
+    const saved = JSON.parse(raw);
+    let applied = 0;
+    for (const k of PERSISTED_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(saved, k)) {
+        module.exports[k] = saved[k];
+        applied++;
+      }
+    }
+    if (applied) console.log(`⚙️  Restored ${applied} saved settings from data/settings.json`);
+  } catch (_) { /* first run — no settings file yet */ }
+};
+
+let __lastSettingsJson = null;
+const persistSettings = () => {
+  try {
+    const out = {};
+    for (const k of PERSISTED_KEYS) out[k] = module.exports[k];
+    const json = JSON.stringify(out, null, 2);
+    if (json === __lastSettingsJson) return true; // nothing changed — no disk IO
+    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE, json);
+    __lastSettingsJson = json;
+    return true;
+  } catch (e) {
+    console.log('⚠️  Could not save settings:', e.message);
+    return false;
+  }
+};
+
+module.exports.persistSettings = persistSettings;
+loadSettings();

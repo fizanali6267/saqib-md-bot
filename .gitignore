@@ -17,3 +17,4 @@ session/
 Thumbs.db
 tmp/
 *.tmp
+data/
