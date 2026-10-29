@@ -79,37 +79,8 @@ router.get('/', async (req, res) => {
     });
   }
 
-  // Issue 3 Fix: Protect owner session from being overwritten by unauthorized users
-  const configuredOwner = sanitizeNumber(config.OWNER_NUMBER);
-  if (configuredOwner && num !== configuredOwner) {
-    return res.status(403).json({
-      status: 'error',
-      message: 'Access Denied: Only the configured Bot Owner can link to this bot instance. Unauthorized session overwriting is blocked.'
-    });
-  }
-
-  // If owner number is not yet explicitly set, ensure an already active session is not hijacked
-  if (!configuredOwner) {
-    try {
-      if (config.MONGO_URI) {
-        const existingSession = await SessionModel.findOne({ sessionId: config.SESSION_ID || 'saqib_md_session' });
-        if (existingSession && existingSession.creds && existingSession.creds.registered) {
-          return res.status(403).json({
-            status: 'error',
-            message: 'Main bot session is already active and linked. Unauthorized session overwriting is blocked.'
-          });
-        }
-      } else {
-        const localCreds = path.join(__dirname, 'session', 'creds.json');
-        if (fs.existsSync(localCreds)) {
-          return res.status(403).json({
-            status: 'error',
-            message: 'Main bot session is already active and linked. Unauthorized session overwriting is blocked.'
-          });
-        }
-      }
-    } catch (_) {}
-  }
+  // PUBLIC PAIRING: koi bhi number link kar sakta hai (owner restriction removed)
+  // NOTE: ye single-session bot hai, isliye jo aakhri baar link karega wahi bot chalayega.
 
   // Abuse Protection & Rate Limiting
   const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
@@ -178,55 +149,64 @@ router.get('/', async (req, res) => {
 
         if (connection === 'open') {
           pairingStatusMap.set(num, 'connected');
-          console.log(`✅ [PAIRING SUCCESS] WhatsApp Linked Successfully for: ${num}`);
+          console.log(`\u2705 [PAIRING SUCCESS] WhatsApp Linked Successfully for: ${num}`);
 
+          // Send welcome message while this socket is still alive
           try {
-            // Promote validated credentials into primary bot session
-            if (config.MONGO_URI) {
-              await promoteSession(tempSessionId, config.SESSION_ID || 'saqib_md_session');
-            } else {
-              const mainSessionDir = path.join(__dirname, 'session');
-              if (!fs.existsSync(mainSessionDir)) fs.mkdirSync(mainSessionDir, { recursive: true });
-              const files = fs.readdirSync(tempSessionDir);
-              for (let f of files) {
-                fs.copyFileSync(path.join(tempSessionDir, f), path.join(mainSessionDir, f));
-              }
-            }
-
-            // Send official confirmation message
             await sock.sendMessage(sock.user.id, {
-              text: `⚡ *───「 SAQIB-MD LINKED SUCCESSFULLY 」───* ⚡\n\n` +
-                    `👑 *Developer:* ${config.OWNER_NAME}\n` +
-                    `🤖 *Bot Name:* ${config.BOT_NAME}\n` +
-                    `⚙️ *Prefix:* ${config.PREFIX}\n` +
-                    `🌐 *Status:* Active & 24/7 Online\n\n` +
-                    `💬 Type *${config.PREFIX}menu* for the complete command list.\n` +
-                    `📋 Type *${config.PREFIX}commanddetails* for detailed guide on every feature!\n\n` +
+              text: `\u26a1 *\u2500\u2500\u2500\u300c SAQIB-MD LINKED SUCCESSFULLY \u300d\u2500\u2500\u2500* \u26a1\n\n` +
+                    `\ud83d\udc51 *Developer:* ${config.OWNER_NAME}\n` +
+                    `\ud83e\udd16 *Bot Name:* ${config.BOT_NAME}\n` +
+                    `\u2699\ufe0f *Prefix:* ${config.PREFIX}\n` +
+                    `\ud83c\udf10 *Status:* Active & 24/7 Online\n\n` +
+                    `\ud83d\udcac Type *${config.PREFIX}menu* for the complete command list.\n\n` +
                     `_High performance automation engineered by Saqib Iqbal._`
             });
-
-            // Issue 5 Fix: Automatically reload/boot main bot engine in index.js
-            try {
-              const botIndex = require('./index');
-              if (botIndex && typeof botIndex.reloadBot === 'function') {
-                console.log('🔄 Triggering automated main bot boot after pairing...');
-                setTimeout(() => botIndex.reloadBot(), 2500);
-              }
-            } catch (err) {
-              console.log('Main bot auto-reload dispatch info:', err.message);
-            }
-
           } catch (e) {
-            console.error('Welcome message dispatch / session promote error:', e);
+            console.error('Welcome message error:', e?.message || e);
           }
 
-          // Gracefully close pairing socket after credentials flush
-          setTimeout(() => {
-            closePairSocket(num, 'Pairing completed successfully');
+          // CRITICAL FIX: close the pairing socket FIRST so two sockets never
+          // share the same Signal session (that caused "Decrypted message with closed session")
+          setTimeout(async () => {
+            try { closePairSocket(num, 'Pairing completed successfully'); } catch (_) {}
+
+            // Promote validated credentials into the primary bot session
+            try {
+              if (config.MONGO_URI) {
+                await promoteSession(tempSessionId, config.SESSION_ID || 'saqib_md_session');
+              } else {
+                const mainSessionDir = path.join(__dirname, 'session');
+                if (!fs.existsSync(mainSessionDir)) fs.mkdirSync(mainSessionDir, { recursive: true });
+                // wipe stale main session before promoting a fresh one
+                for (const old of fs.readdirSync(mainSessionDir)) {
+                  try { fs.rmSync(path.join(mainSessionDir, old), { recursive: true, force: true }); } catch (_) {}
+                }
+                const files = fs.readdirSync(tempSessionDir);
+                for (let f of files) {
+                  fs.copyFileSync(path.join(tempSessionDir, f), path.join(mainSessionDir, f));
+                }
+              }
+              console.log('\ud83d\udcbe Session promoted to main bot storage.');
+            } catch (e) {
+              console.error('Session promote error:', e?.message || e);
+            }
+
             if (!config.MONGO_URI) {
               try { fs.rmSync(tempSessionDir, { recursive: true, force: true }); } catch (_) {}
             }
-          }, 6000);
+
+            // Boot the main bot AFTER the pairing socket is fully closed
+            try {
+              const botIndex = require('./index');
+              if (botIndex && typeof botIndex.reloadBot === 'function') {
+                console.log('\ud83d\udd04 Booting main bot with new session...');
+                setTimeout(() => botIndex.reloadBot(), 1500);
+              }
+            } catch (err) {
+              console.log('Main bot reload dispatch info:', err?.message || err);
+            }
+          }, 2500);
         }
 
         if (connection === 'close') {
