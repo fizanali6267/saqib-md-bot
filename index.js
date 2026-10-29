@@ -592,6 +592,9 @@ async function startBot() {
       const rawCommand = args.shift().toLowerCase();
       const command = resolveAlias(rawCommand);
 
+      // Lightweight command trace so slow/ignored commands are diagnosable
+      console.log(`\u2328\ufe0f  CMD ${config.PREFIX}${command} | from ${m.sender} | chat ${m.chat}`);
+
       let handled = false;
       for (const plugin of plugins) {
         if (plugin.commands.includes(command)) {
