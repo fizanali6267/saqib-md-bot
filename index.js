@@ -146,8 +146,21 @@ async function startBot() {
   const sessionDir = path.join(__dirname, 'session');
 
   if (config.MONGO_URI) {
-    authState = await useMongoDBAuthState(config.MONGO_URI, config.SESSION_ID || 'saqib_md_session');
-  } else {
+    // Resilience: agar Atlas down ho / IP whitelist na ho / credentials ghalat
+    // hon, bot ko marne ke bajaye disk session par fall back kar jate hain.
+    // Warna ek DB issue poore bot ko offline kar deta hai.
+    try {
+      authState = await useMongoDBAuthState(config.MONGO_URI, config.SESSION_ID || 'saqib_md_session');
+      console.log('🗄️  Session backend: MongoDB Atlas');
+    } catch (mongoErr) {
+      console.error('⚠️  MongoDB unavailable — falling back to local file session.');
+      console.error('   Reason:', mongoErr?.message || mongoErr);
+      console.error('   Fix: Atlas → Network Access → allow 0.0.0.0/0 (or your host IP).');
+      authState = null;
+    }
+  }
+
+  if (!authState) {
     // FAST in-memory auth state: no synchronous disk I/O per Signal key
     authState = useFastAuthState(sessionDir);
   }
