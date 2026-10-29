@@ -37,6 +37,53 @@ for (const __level of ['log', 'info', 'debug']) {
   };
 }
 
+// ---- Self-healing: corrupted Signal session recovery -----------------------
+// libsignal prints "Failed to decrypt message with any known session..." followed
+// by a "Bad MAC" error and a stack trace whose first frame names the offending
+// JID (e.g. "at async 215753789857825.0 [as awaitable]"). A Bad MAC means the
+// stored ratchet no longer matches the sender's, so every single message from
+// that contact fails forever ("Waiting for this message. This may take a while.").
+//
+// Instead of requiring a manual wipe + restart, we detect it here, delete that
+// ONE session key from RAM + MongoDB, and let WhatsApp rebuild it from a fresh
+// prekey bundle. The bot heals itself within one message.
+let __badMacWindow = 0;
+const __healQueue = new Set();
+const __healSignalSession = (jid) => {
+  if (!jid || __healQueue.has(jid)) return;
+  __healQueue.add(jid);
+  try {
+    const sid = config.SESSION_ID || 'saqib_md_session';
+    if (!config.MONGO_URI) return;
+    const { dropSignalSession } = require('./lib/mongoAuth');
+    dropSignalSession(sid, jid)
+      .then((ok) => {
+        if (ok) console.log(`\ud83e\ude79 Self-heal: dropped corrupt Signal session for ${jid} (will rebuild).`);
+      })
+      .catch(() => null)
+      .finally(() => setTimeout(() => __healQueue.delete(jid), 10000));
+  } catch (_) {
+    __healQueue.delete(jid);
+  }
+};
+
+const __origError = console.error.bind(console);
+console.error = (...args) => {
+  const s = typeof args[0] === 'string' ? args[0] : '';
+  // Start of a Bad MAC block -> swallow it and open a short suppression window.
+  if (s.includes('Failed to decrypt message with any known session') || s.includes('Bad MAC')) {
+    __badMacWindow = 8;
+    return;
+  }
+  if (__badMacWindow > 0) {
+    __badMacWindow--;
+    const m = s.match(/at async (\d+(?:\.\d+)?) \[as awaitable\]/);
+    if (m) __healSignalSession(m[1]);
+    return; // suppress the stack frames of the Bad MAC block
+  }
+  __origError(...args);
+};
+
 // Issue 7 Fix: Global unhandled rejection and uncaught exception handlers prevent process crash
 process.on('unhandledRejection', (err) => {
   console.error('⚠️ [CRASH GUARD] Unhandled Rejection detected:', err?.message || err);
