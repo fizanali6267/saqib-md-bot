@@ -13,7 +13,7 @@ const {
   initAuthCreds
 } = require('@whiskeysockets/baileys');
 const config = require('./config');
-const { useMongoDBAuthState, promoteSession, deleteSession, SessionModel } = require('./lib/mongoAuth');
+const { useMongoDBAuthState, promoteSession, deleteSession, clearSignalSessions, SessionModel } = require('./lib/mongoAuth');
 
 // In-memory active sockets, timeout handlers, and status tracker
 const activePairSockets = new Map();
@@ -192,7 +192,13 @@ router.get('/', async (req, res) => {
             // Promote validated credentials into the primary bot session
             try {
               if (config.MONGO_URI) {
-                await promoteSession(tempSessionId, config.SESSION_ID || 'saqib_md_session');
+                const targetId = config.SESSION_ID || 'saqib_md_session';
+                await promoteSession(tempSessionId, targetId);
+                // CRITICAL: wipe Signal sessions created by the pairing socket.
+                // Warna naya device un desynced ratchets ko reuse karta hai aur
+                // har message par "Bad MAC" + "Waiting for this message" aata hai.
+                const cleared = await clearSignalSessions(targetId);
+                if (cleared) console.log(`\ud83e\uddf9 Cleared ${cleared} pairing-time Signal sessions (they will rebuild fresh).`);
               } else {
                 const mainSessionDir = path.join(__dirname, 'session');
                 if (!fs.existsSync(mainSessionDir)) fs.mkdirSync(mainSessionDir, { recursive: true });
@@ -202,6 +208,8 @@ router.get('/', async (req, res) => {
                 }
                 const files = fs.readdirSync(tempSessionDir);
                 for (let f of files) {
+                  // Skip pairing-time Signal sessions so they rebuild cleanly.
+                  if (/^session-.*\.json$/.test(f)) continue;
                   fs.copyFileSync(path.join(tempSessionDir, f), path.join(mainSessionDir, f));
                 }
               }
