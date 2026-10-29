@@ -4,6 +4,19 @@ const fs = require('fs');
 const humanizeDuration = require('humanize-duration');
 const config = require('../config');
 
+// Cache the banner once — avoids a synchronous disk read on every .menu call.
+let _bannerCache = null;
+function getBanner() {
+  if (_bannerCache !== null) return _bannerCache;
+  try {
+    const p = path.join(__dirname, '../assets/banner.jpg');
+    _bannerCache = fs.existsSync(p) ? fs.readFileSync(p) : false;
+  } catch (_) {
+    _bannerCache = false;
+  }
+  return _bannerCache;
+}
+
 module.exports = {
   name: 'general',
   commands: ['menu', 'help', 'ping', 'speed', 'alive', 'runtime', 'uptime', 'owner', 'system', 'info', 'restart', 'commanddetails', 'commands', 'cmd', 'cmdinfo'],
@@ -215,9 +228,8 @@ Type *${prefix}commanddetails*
 
 _⚡ Engineered for High-Speed Performance | Powered by Saqib Iqbal_`;
 
-        const bannerPath = path.join(__dirname, '../assets/banner.jpg');
-        if (fs.existsSync(bannerPath)) {
-          const bannerBuffer = fs.readFileSync(bannerPath);
+        const bannerBuffer = getBanner();
+        if (bannerBuffer) {
           await sock.sendMessage(m.chat, {
             image: bannerBuffer,
             caption: menuText,

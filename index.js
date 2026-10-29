@@ -22,6 +22,7 @@ process.on('uncaughtException', (err) => {
 const config = require('./config');
 const { serialize } = require('./lib/serialize');
 const { useMongoDBAuthState } = require('./lib/mongoAuth');
+const { useFastAuthState } = require('./lib/fastAuthState');
 const { resolveAlias } = require('./lib/aliasMap');
 const pairRouter = require('./pair');
 const { generateChatbotReply } = require('./plugins/chatbot');
@@ -80,7 +81,22 @@ let onlinePresenceInterval = null;
 let autoBioInterval = null;
 let currentSock = null;
 
+// ---- Connection manager guards (prevents duplicate sockets sharing one session) ----
+let isStarting = false;          // true while a socket is being created
+let reconnectTimer = null;       // pending auto-reconnect timer
+let suppressReconnectUntil = 0;  // ignore close events until this timestamp (manual reload)
+
 async function startBot() {
+  // Guard: never build two sockets at the same time.
+  if (isStarting) {
+    console.log('⏳ startBot() already in progress — skipping duplicate call.');
+    return currentSock;
+  }
+  isStarting = true;
+  // Watchdog: if socket creation hangs/throws, release the guard after 25s.
+  const guardTimer = setTimeout(() => { isStarting = false; }, 25000);
+  if (guardTimer.unref) guardTimer.unref();
+
   console.log(`🚀 Starting ${config.BOT_NAME}...`);
 
   let authState;
@@ -89,14 +105,26 @@ async function startBot() {
   if (config.MONGO_URI) {
     authState = await useMongoDBAuthState(config.MONGO_URI, config.SESSION_ID || 'saqib_md_session');
   } else {
-    if (!fs.existsSync(sessionDir)) {
-      fs.mkdirSync(sessionDir, { recursive: true });
-    }
-    authState = await useMultiFileAuthState(sessionDir);
+    // FAST in-memory auth state: no synchronous disk I/O per Signal key
+    authState = useFastAuthState(sessionDir);
   }
 
   const { state, saveCreds } = authState;
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
+
+  // Group metadata cache: avoids a network round-trip on every group message
+  const groupMetadataCache = new Map();
+  const cachedGroupMetadata = async (jid) => {
+    const hit = groupMetadataCache.get(jid);
+    if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.data;
+    try {
+      const data = await currentSock.groupMetadata(jid);
+      groupMetadataCache.set(jid, { data, at: Date.now() });
+      return data;
+    } catch (_) {
+      return hit?.data;
+    }
+  };
 
   const sock = makeWASocket({
     version,
@@ -104,11 +132,28 @@ async function startBot() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     browser: Browsers.ubuntu('Chrome'),
+    // ---- performance / latency tuning ----
     syncFullHistory: false,
-    generateHighQualityLinkPreview: true
+    shouldSyncHistoryMessage: () => false,
+    generateHighQualityLinkPreview: false,
+    markOnlineOnConnect: false,
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 30000,
+    retryRequestDelayMs: 250,
+    maxMsgRetryCount: 3,
+    cachedGroupMetadata,
+    // Helps WhatsApp decrypt retried messages instead of showing
+    // "Waiting for this message. This may take a while."
+    getMessage: async (key) => {
+      const cached = messageStore.get(key.id);
+      return cached?.msg?.message;
+    }
   });
 
   currentSock = sock;
+  clearTimeout(guardTimer);
+  isStarting = false; // socket built — release the creation guard
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -120,10 +165,24 @@ async function startBot() {
       if (autoBioInterval) clearInterval(autoBioInterval);
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+      // Manual reload in progress: ignore this close event entirely.
+      if (Date.now() < suppressReconnectUntil) {
+        console.log('🔇 Suppressed reconnect (manual reload in progress).');
+        return;
+      }
+
       console.log(`Connection closed with code: ${statusCode}. Reconnecting: ${shouldReconnect}`);
+
+      // Make sure the dead socket is fully torn down before reconnecting.
+      try { sock.end(undefined); } catch (_) {}
+
       if (shouldReconnect) {
-        // Issue 7 Fix: Catch reconnect error to prevent unhandled rejection crash
-        setTimeout(() => startBot().catch(err => console.error('Bot launch error:', err)), 5000);
+        if (reconnectTimer) return; // already scheduled — do not stack reconnects
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          startBot().catch(err => console.error('Bot launch error:', err));
+        }, 3000);
       } else {
         console.log('❌ Device logged out. Please link your phone again.');
       }
@@ -309,22 +368,27 @@ async function startBot() {
       }
 
       // Auto Reaction Logic (All / Sender / Me / Mirror)
+      // FIRE-AND-FORGET: never await this, otherwise every command waits
+      // for an extra WhatsApp API round-trip before executing.
       if (config.AUTO_REACT && m.body) {
         try {
+          let reactEmoji = null;
           if (config.AUTO_REACT_MODE === 'mirror') {
             const emojiMatch = m.body.match(/(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u);
-            if (emojiMatch) {
-              await m.react(emojiMatch[0]);
-            }
+            if (emojiMatch) reactEmoji = emojiMatch[0];
           } else if (config.AUTO_REACT_MODE === 'sender' && !m.fromMe) {
             const emojis = ['⚡', '🔥', '✨', '👑', '💯', '❤️', '🌟'];
-            await m.react(emojis[Math.floor(Math.random() * emojis.length)]);
+            reactEmoji = emojis[Math.floor(Math.random() * emojis.length)];
           } else if (config.AUTO_REACT_MODE === 'me' && m.fromMe) {
             const emojis = ['⚡', '👑', '💯', '🔥'];
-            await m.react(emojis[Math.floor(Math.random() * emojis.length)]);
+            reactEmoji = emojis[Math.floor(Math.random() * emojis.length)];
           } else if (config.AUTO_REACT_MODE === 'all') {
             const emojis = ['⚡', '🔥', '✨', '👑', '💯', '❤️', '🌟'];
-            await m.react(emojis[Math.floor(Math.random() * emojis.length)]);
+            reactEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+          }
+          if (reactEmoji) {
+            // do NOT await — let it run in the background
+            m.react(reactEmoji).catch(() => null);
           }
         } catch (_) {}
       }
@@ -342,18 +406,14 @@ async function startBot() {
       }
 
       // Friendly AI Chatbot (if message is NOT a command)
+      // FIRE-AND-FORGET: never await the AI call here, otherwise a slow
+      // Gemini response blocks every command that arrives right after it.
       if (!m.body.startsWith(config.PREFIX) && !m.fromMe) {
         const shouldChat = (!m.isGroup && config.CHATBOT_PM) || (m.isGroup && config.CHATBOT_GROUP);
         if (shouldChat && m.body.trim().length > 1) {
-          try {
-            const botReply = await generateChatbotReply(m.body, m.pushName || 'Dost');
-            if (botReply) {
-              await m.reply(botReply);
-              continue;
-            }
-          } catch (e) {
-            console.error('Chatbot auto-reply error:', e);
-          }
+          generateChatbotReply(m.body, m.pushName || 'Dost')
+            .then(botReply => { if (botReply) m.reply(botReply).catch(() => null); })
+            .catch(e => console.error('Chatbot auto-reply error:', e?.message || e));
         }
       }
 
@@ -431,13 +491,19 @@ async function startBot() {
 // Issue 5 Fix: reloadBot function to reload main bot connection when new pairing completes
 async function reloadBot() {
   console.log('🔄 Reloading main bot connection with new pairing credentials...');
+  // Prevent the old socket's close event from triggering a second reconnect.
+  suppressReconnectUntil = Date.now() + 8000;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (currentSock) {
     try {
       if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
       if (autoBioInterval) clearInterval(autoBioInterval);
       currentSock.end(new Error('Reloading with updated credentials'));
     } catch (_) {}
+    currentSock = null;
   }
+  // Small delay lets the old socket fully release the Signal session.
+  await new Promise(r => setTimeout(r, 800));
   await startBot().catch(err => console.error('Bot reload error:', err));
 }
 
