@@ -212,6 +212,8 @@ let onlinePresenceInterval = null;
 let autoBioInterval = null;
 let currentSock = null;
 let currentKeysStore = null; // live Signal key store (for self-heal eviction)
+// Ids of messages the bot itself sent — used to stop "Message Yourself" loops.
+const botSentMessageIds = new Set();
 
 // ---- Connection manager guards (prevents duplicate sockets sharing one session) ----
 let isStarting = false;          // true while a socket is being created
@@ -340,10 +342,21 @@ async function startBot() {
   // messages were stored, so when a recipient's phone asked the bot to
   // re-send one of the bot's own replies, getMessage() returned undefined and
   // the chat stuck on "Waiting for this message".
+  //
+  // LOOP PROTECTION: every id we send ourselves is remembered, because
+  // "Message Yourself" delivers our own outgoing messages back to us as
+  // `type: 'append'`. Without this set the bot would answer its own replies
+  // forever.
   const originalSendMessage = sock.sendMessage.bind(sock);
   sock.sendMessage = async (jid, content, options = {}) => {
     const sent = await originalSendMessage(jid, content, options);
     try {
+      if (sent?.key?.id) {
+        botSentMessageIds.add(sent.key.id);
+        if (botSentMessageIds.size > 5000) {
+          botSentMessageIds.delete(botSentMessageIds.values().next().value);
+        }
+      }
       if (sent?.key?.id && sent?.message) {
         cacheMessage(sent.key.id, {
           sender: sock.user?.id || 'me',
@@ -439,10 +452,24 @@ async function startBot() {
 
   // Message Handler
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
+    // CRITICAL FIX: "Message Yourself" (apne inbox) ke messages WhatsApp
+    // `type: 'append'` ke saath bhejta hai, groups/DM `type: 'notify'`.
+    // Pehle sirf 'notify' allow tha, is liye self-chat mein koi command
+    // chal hi nahi rahi thi.
+    if (type !== 'notify' && type !== 'append') return;
 
     for (let rawMsg of messages) {
       if (!rawMsg.message) continue;
+
+      // Loop protection: ignore anything the bot itself just sent.
+      if (rawMsg.key?.id && botSentMessageIds.has(rawMsg.key.id)) continue;
+
+      // 'append' also carries offline/stale messages after a reconnect. Only
+      // act on recent ones so old commands are never re-executed.
+      if (type === 'append') {
+        const ts = Number(rawMsg.messageTimestamp || 0) * 1000;
+        if (ts && Date.now() - ts > 120000) continue;
+      }
 
       const __t0 = Date.now();
       const m = serialize(sock, rawMsg);
@@ -593,11 +620,14 @@ async function startBot() {
       // Auto Reaction Logic (All / Sender / Me / Mirror)
       // FIRE-AND-FORGET: never await this, otherwise every command waits
       // for an extra WhatsApp API round-trip before executing.
-      if (config.AUTO_REACT && m.body) {
+      // AUTO-REACT: runs on EVERY message type — text, photo, video, sticker,
+      // voice note. Previously gated on `m.body`, so media messages (empty
+      // body) never got a reaction.
+      if (config.AUTO_REACT) {
         try {
           let reactEmoji = null;
           if (config.AUTO_REACT_MODE === 'mirror') {
-            const emojiMatch = m.body.match(/(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u);
+            const emojiMatch = (m.body || '').match(/(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u);
             if (emojiMatch) reactEmoji = emojiMatch[0];
           } else if (config.AUTO_REACT_MODE === 'sender' && !m.fromMe) {
             const emojis = ['⚡', '🔥', '✨', '👑', '💯', '❤️', '🌟'];
