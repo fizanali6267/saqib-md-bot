@@ -135,6 +135,31 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Live diagnostics: proves the socket can actually deliver to a given JID.
+// Usage: /selftest?jid=92300...  (defaults to the owner's own number)
+app.get('/selftest', async (req, res) => {
+  try {
+    if (!currentSock) return res.status(503).json({ ok: false, error: 'socket not connected' });
+    const num = String(req.query.jid || config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+    if (!num) return res.status(400).json({ ok: false, error: 'no jid' });
+    const jid = `${num}@s.whatsapp.net`;
+    const t0 = Date.now();
+    const sent = await currentSock.sendMessage(jid, {
+      text: `🧪 *SELF-TEST*\nBot is able to deliver to this chat.\n${new Date().toISOString()}`
+    });
+    res.json({
+      ok: true,
+      jid,
+      ms: Date.now() - t0,
+      id: sent?.key?.id,
+      remoteJid: sent?.key?.remoteJid,
+      lidMap: lid.size()
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // Load all command plugins with explicit fallback to guarantee 100% discovery
 const plugins = [];
 const defaultPluginFiles = [
