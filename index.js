@@ -59,13 +59,24 @@ const __healSignalSession = (jid) => {
   try {
     const sid = config.SESSION_ID || 'saqib_md_session';
     if (!config.MONGO_URI) return;
-    const { dropSignalSession } = require('./lib/mongoAuth');
-    dropSignalSession(sid, jid)
-      .then((ok) => {
-        if (ok) console.log(`\ud83e\ude79 Self-heal: dropped corrupt Signal session for ${jid} (will rebuild).`);
-      })
-      .catch(() => null)
-      .finally(() => setTimeout(() => __healQueue.delete(jid), 10000));
+    // Evict through the live key store first: makeCacheableSignalKeyStore keeps
+    // its own copy, so deleting only from MongoDB would let the corrupt ratchet
+    // be served again forever.
+    const evict = async () => {
+      let ok = false;
+      try {
+        if (currentKeysStore && typeof currentKeysStore.set === 'function') {
+          await currentKeysStore.set({ session: { [jid]: null } });
+          ok = true;
+        }
+      } catch (_) {}
+      if (!ok) {
+        const { dropSignalSession } = require('./lib/mongoAuth');
+        ok = await dropSignalSession(sid, jid).catch(() => false);
+      }
+      if (ok) console.log(`\ud83e\ude79 Self-heal: dropped corrupt Signal session for ${jid} (will rebuild).`);
+    };
+    evict().catch(() => null).finally(() => setTimeout(() => __healQueue.delete(jid), 10000));
   } catch (_) {
     __healQueue.delete(jid);
   }
@@ -174,6 +185,7 @@ function cacheMessage(id, entry) {
 let onlinePresenceInterval = null;
 let autoBioInterval = null;
 let currentSock = null;
+let currentKeysStore = null; // live Signal key store (for self-heal eviction)
 
 // ---- Connection manager guards (prevents duplicate sockets sharing one session) ----
 let isStarting = false;          // true while a socket is being created
@@ -225,6 +237,7 @@ async function startBot() {
   const cachedKeys = (typeof makeCacheableSignalKeyStore === 'function')
     ? makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
     : state.keys;
+  currentKeysStore = cachedKeys;
 
   // Official in-memory store: lets getMessage() re-serve any message Baileys
   // has seen, which is what the recipient's phone asks for on a retry.
@@ -269,17 +282,17 @@ async function startBot() {
     // Helps WhatsApp decrypt retried messages instead of showing
     // "Waiting for this message. This may take a while."
     getMessage: async (key) => {
-      // Step A: official in-memory store lookup
+      // Step A: our own bounded cache first — zero await, fastest path
+      const cached = messageStore.get(key.id);
+      if (cached?.msg?.message) return cached.msg.message;
+      if (cached?.message) return cached.message;
+      // Step B: official in-memory store lookup
       try {
         if (store) {
           const stored = await store.loadMessage(key.remoteJid, key.id);
           if (stored?.message) return stored.message;
         }
       } catch (_) {}
-      // Step B: our own bounded cache (incoming + outgoing)
-      const cached = messageStore.get(key.id);
-      if (cached?.msg?.message) return cached.msg.message;
-      if (cached?.message) return cached.message;
       // Step C: CRITICAL — never return undefined. Returning an empty proto
       // message lets the Signal ratchet step complete so the recipient's phone
       // stops showing "Waiting for this message" forever.
