@@ -428,12 +428,13 @@ async function startBot() {
       for (const plugin of plugins) {
         if (plugin.commands.includes(command)) {
           handled = true;
-          try {
-            await plugin.execute(sock, m, { command, args, prefix: config.PREFIX });
-          } catch (err) {
-            console.error(`Error in command ${command}:`, err);
-            await m.reply(config.MESSAGES.ERROR + `\n_${err.message}_`);
-          }
+          // FIRE-AND-FORGET: run the command without blocking the message loop,
+          // so one slow command can never stall the next .menu / command.
+          plugin.execute(sock, m, { command, args, prefix: config.PREFIX })
+            .catch(async (err) => {
+              console.error(`Error in command ${command}:`, err);
+              try { await m.reply(config.MESSAGES.ERROR + `\n_${err.message}_`); } catch (_) {}
+            });
           break;
         }
       }
