@@ -52,6 +52,11 @@ module.exports = {
   CHATBOT_PM: parseBool(process.env.CHATBOT_PM, true), // Active in Private DM
   CHATBOT_GROUP: parseBool(process.env.CHATBOT_GROUP, false), // Active in Groups
 
+  // Issue 7 Fix: single-session bot hai, is liye public pairing se koi bhi
+  // banda owner ki session overwrite kar sakta tha. Default: owner-only.
+  // Public portal wapas chalu karna ho to ALLOW_PUBLIC_PAIRING=true set karein.
+  ALLOW_PUBLIC_PAIRING: parseBool(process.env.ALLOW_PUBLIC_PAIRING, false),
+
   // Other Security Features (Fixed boolean parsing)
   ANTI_LINK: parseBool(process.env.ANTI_LINK, true),
   ANTI_BADWORD: parseBool(process.env.ANTI_BADWORD, true),

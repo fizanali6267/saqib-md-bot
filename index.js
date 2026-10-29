@@ -75,8 +75,25 @@ for (const file of allPluginFiles) {
   }
 }
 
-// In-memory message store for Anti-Delete
+// In-memory message store for Anti-Delete AND for answering WhatsApp retry
+// requests (getMessage). Bounded so it can never leak memory on a busy bot.
 const messageStore = new Map();
+const MESSAGE_STORE_LIMIT = 5000;
+
+// Issue 1 Fix: WhatsApp retry handshake cache. Without this, a failed decrypt
+// retry loops forever and the recipient sees "Waiting for this message".
+const msgRetryCounterCache = new NodeCache({ stdTTL: 0, checkperiod: 0 });
+
+// Single helper so every insert (incoming + outgoing) evicts the same way.
+function cacheMessage(id, entry) {
+  if (!id) return;
+  messageStore.set(id, entry);
+  while (messageStore.size > MESSAGE_STORE_LIMIT) {
+    const oldest = messageStore.keys().next().value;
+    if (oldest === undefined) break;
+    messageStore.delete(oldest);
+  }
+}
 let onlinePresenceInterval = null;
 let autoBioInterval = null;
 let currentSock = null;
@@ -142,18 +159,41 @@ async function startBot() {
     keepAliveIntervalMs: 30000,
     retryRequestDelayMs: 250,
     maxMsgRetryCount: 3,
+    // Issue 1 Fix: keeps the retry counter in RAM so Baileys can complete the
+    // decrypt retry handshake instead of stalling on "Waiting for this message".
+    msgRetryCounterCache,
     cachedGroupMetadata,
     // Helps WhatsApp decrypt retried messages instead of showing
     // "Waiting for this message. This may take a while."
     getMessage: async (key) => {
       const cached = messageStore.get(key.id);
-      return cached?.msg?.message;
+      return cached?.msg?.message || undefined;
     }
   });
 
   currentSock = sock;
   clearTimeout(guardTimer);
   isStarting = false; // socket built — release the creation guard
+
+  // Issue 1 Fix: cache every OUTGOING message too. Previously only incoming
+  // messages were stored, so when a recipient's phone asked the bot to
+  // re-send one of the bot's own replies, getMessage() returned undefined and
+  // the chat stuck on "Waiting for this message".
+  const originalSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (jid, content, options = {}) => {
+    const sent = await originalSendMessage(jid, content, options);
+    try {
+      if (sent?.key?.id && sent?.message) {
+        cacheMessage(sent.key.id, {
+          sender: sock.user?.id || 'me',
+          chat: jid,
+          msg: sent,
+          time: Date.now()
+        });
+      }
+    } catch (_) {}
+    return sent;
+  };
 
   sock.ev.on('creds.update', saveCreds);
 

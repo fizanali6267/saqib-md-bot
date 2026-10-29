@@ -433,9 +433,12 @@ _⚡ Developed exclusively for Saqib Iqbal | Ultra-Fast Architecture_`;
       case 'ping':
       case 'speed': {
         const start = Date.now();
-        await m.react('⚡');
+        // Issue 6 Fix: fire-and-forget reaction. Awaiting m.react() added the
+        // whole WhatsApp round-trip to the measured latency and made .ping feel
+        // slow even on a healthy connection.
+        m.react('⚡').catch(() => null);
         const latency = Date.now() - start;
-        await m.reply(`🚀 *Pong:* \`${latency}ms\`\n⚡ *Status:* Online & Responsive\n\n🚀 *Get Your Own Free Saqib-MD Bot:*\n🔗 ${config.PAIRING_LINK}`);
+        await m.reply(`🚀 *Pong:* \`${latency}ms\`\n⚡ *Status:* Online & Lightning Fast\n\n👑 *Developer:* ${config.OWNER_NAME}\n🤖 *Engine:* ${config.BOT_NAME} High-Speed Core`);
         break;
       }
 

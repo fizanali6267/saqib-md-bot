@@ -79,8 +79,20 @@ router.get('/', async (req, res) => {
     });
   }
 
-  // PUBLIC PAIRING: koi bhi number link kar sakta hai (owner restriction removed)
-  // NOTE: ye single-session bot hai, isliye jo aakhri baar link karega wahi bot chalayega.
+  // Issue 7 Fix: Owner Session Hijack Protection.
+  // Ye single-session bot hai: jo bhi number pair karega, wahi bot chalayega.
+  // Pehle public portal par koi bhi banda owner ki primary session overwrite
+  // kar sakta tha. Ab sirf configured OWNER_NUMBER pair kar sakta hai, jab tak
+  // ALLOW_PUBLIC_PAIRING=true set na ho.
+  if (!config.ALLOW_PUBLIC_PAIRING) {
+    const configuredOwner = sanitizeNumber(config.OWNER_NUMBER);
+    if (configuredOwner && num !== configuredOwner) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Access Denied: Only the configured Bot Owner can link to this bot instance. Unauthorized session overwriting is blocked.'
+      });
+    }
+  }
 
   // Abuse Protection & Rate Limiting
   const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
