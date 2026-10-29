@@ -220,6 +220,43 @@ let isStarting = false;          // true while a socket is being created
 let reconnectTimer = null;       // pending auto-reconnect timer
 let suppressReconnectUntil = 0;  // ignore close events until this timestamp (manual reload)
 
+// ---- Single-instance lock -------------------------------------------------
+// Two processes connecting with the same WhatsApp creds make the server kill
+// the session with 401 loggedOut. Platform restarts can briefly overlap, so we
+// refuse to start a second instance while a live one holds the lock.
+const LOCK_FILE = path.join(__dirname, 'data', 'instance.lock');
+const acquireInstanceLock = () => {
+  try {
+    fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true });
+    if (fs.existsSync(LOCK_FILE)) {
+      const raw = fs.readFileSync(LOCK_FILE, 'utf8').trim();
+      const pid = parseInt(raw, 10);
+      if (pid && pid !== process.pid) {
+        let alive = false;
+        try { process.kill(pid, 0); alive = true; } catch (_) { alive = false; }
+        if (alive) {
+          console.log(`⛔ Another instance is already running (pid ${pid}). Exiting to protect the WhatsApp session.`);
+          process.exit(0);
+        }
+      }
+    }
+    fs.writeFileSync(LOCK_FILE, String(process.pid));
+    const release = () => {
+      try {
+        if (fs.readFileSync(LOCK_FILE, 'utf8').trim() === String(process.pid)) fs.unlinkSync(LOCK_FILE);
+      } catch (_) {}
+    };
+    process.on('exit', release);
+    process.on('SIGINT', () => { release(); process.exit(0); });
+    process.on('SIGTERM', () => { release(); process.exit(0); });
+    return true;
+  } catch (e) {
+    console.log('⚠️  Instance lock unavailable:', e.message);
+    return true;
+  }
+};
+acquireInstanceLock();
+
 async function startBot() {
   // Guard: never build two sockets at the same time.
   if (isStarting) {
