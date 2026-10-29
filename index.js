@@ -12,6 +12,24 @@ const {
   fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 
+// Issue 3 Fix: Log-noise filter.
+// Baileys 6.7.x ships a stray console.log in its Signal layer that dumps whole
+// SessionEntry objects (including private keys) to stdout. On a 100-line log
+// buffer that noise wipes out real startup/error lines, so we drop those calls.
+const __originalConsoleLog = console.log.bind(console);
+const __NOISE_PATTERNS = [
+  'Removing old closed session',
+  'Closing open session',
+  'Closing session:',
+  'Session already closed'
+];
+console.log = (...args) => {
+  try {
+    if (typeof args[0] === 'string' && __NOISE_PATTERNS.some((p) => args[0].includes(p))) return;
+  } catch (_) {}
+  __originalConsoleLog(...args);
+};
+
 // Issue 7 Fix: Global unhandled rejection and uncaught exception handlers prevent process crash
 process.on('unhandledRejection', (err) => {
   console.error('⚠️ [CRASH GUARD] Unhandled Rejection detected:', err?.message || err);
