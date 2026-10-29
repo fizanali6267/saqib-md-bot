@@ -63,9 +63,11 @@ module.exports = {
   ANTI_CALL: parseBool(process.env.ANTI_CALL, false),
   AUTO_BIO: parseBool(process.env.AUTO_BIO, false),
 
-  // AI APIs (Google Gemini pre-configured)
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
+  // AI APIs — SAQIB-MD uses Google Gemini EVERYWHERE (no OpenAI needed).
+  // .gpt, .ai, .gemini, .summarize, .code, chatbot — sab isi key se chalte hain.
+  // Fallback: agar purani deployment par key OPENAI_API_KEY naam se padi ho
+  // to usay bhi accept kar lete hain (migration safety).
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || "",
 
   // Weather API (Pre-configured)
   WEATHER_API_KEY: process.env.WEATHER_API_KEY || "",

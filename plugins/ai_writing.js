@@ -1,18 +1,22 @@
 const axios = require('axios');
 const config = require('../config');
+const { askGemini } = require('../lib/gemini');
 
+// SAQIB-MD: single central Gemini client (model fallback + retry handled inside).
 async function askGeminiAssistant(systemPrompt, userText) {
-  if (config.GEMINI_API_KEY) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.GEMINI_API_KEY}`;
-    const res = await axios.post(url, {
-      contents: [{ parts: [{ text: `${systemPrompt}\n\nInput Text:\n${userText}` }] }]
-    }, {
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.GEMINI_API_KEY }
-    });
-    return res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  }
-  const fallback = await axios.get(`https://api.giftedtech.my.id/api/ai/gpt4?apikey=gifted&q=${encodeURIComponent(userText)}`).catch(() => null);
-  return fallback?.data?.result || 'Service unavailable.';
+  const answer = await askGemini(userText, {
+    systemPrompt: `${systemPrompt}\n\nAlways answer in the same language the user wrote in (Roman Urdu / Urdu / English). Plain text only.`
+  });
+
+  if (answer) return answer;
+
+  // Last-resort free endpoint (no key needed) so the command never dies.
+  const fallback = await axios.get(
+    `https://api.giftedtech.my.id/api/ai/gpt4?apikey=gifted&q=${encodeURIComponent(userText)}`,
+    { timeout: 15000 }
+  ).catch(() => null);
+
+  return fallback?.data?.result || '⚠️ AI service is temporarily unavailable. Please try again in a moment.';
 }
 
 module.exports = {

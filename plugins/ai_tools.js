@@ -1,5 +1,6 @@
 const axios = require('axios');
 const config = require('../config');
+const { askGemini, askGeminiImage, isKeyConfigured } = require('../lib/gemini');
 
 module.exports = {
   name: 'ai_tools',
@@ -17,53 +18,31 @@ module.exports = {
         await m.reply(config.MESSAGES.WAIT);
 
         try {
-          // Priority 1: Official Google Gemini 1.5 Flash API (Supports both query param & x-goog-api-key header)
-          if (config.GEMINI_API_KEY) {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.GEMINI_API_KEY}`;
-            const res = await axios.post(url, {
-              contents: [{ parts: [{ text: prompt }] }]
-            }, {
-              headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': config.GEMINI_API_KEY
-              }
-            });
+          // SAQIB-MD: poora bot sirf GEMINI par chalta hai (no OpenAI needed).
+          // askGemini khud model-fallback (2.5 -> 2.0 -> 1.5) aur retry handle karta hai.
+          const answer = await askGemini(prompt, {
+            systemPrompt: 'You are SAQIB-MD, a helpful, friendly WhatsApp assistant created by Saqib Iqbal. Answer clearly and concisely. If the user writes in Roman Urdu or Urdu, reply in the same language. Use plain text only, no markdown headers.'
+          });
 
-            if (res.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-              const answer = res.data.candidates[0].content.parts[0].text;
-              return await m.reply(`⚡ *Gemini AI (Saqib-MD):*\n\n${answer}`);
-            }
+          if (answer) {
+            return await m.reply(`⚡ *Gemini AI (Saqib-MD):*\n\n${answer}`);
           }
 
-          // Priority 2: OpenAI API (if set)
-          if (config.OPENAI_API_KEY) {
-            const res = await axios.post('https://api.openai.com/v1/chat/completions', {
-              model: 'gpt-3.5-turbo',
-              messages: [{ role: 'user', content: prompt }]
-            }, {
-              headers: { Authorization: `Bearer ${config.OPENAI_API_KEY}` }
-            });
-            return await m.reply(`🤖 *ChatGPT (Saqib-MD):*\n\n${res.data.choices[0].message.content}`);
-          }
-
-          // Priority 3: Built-in Free AI Endpoint (No Key Required)
-          const res = await axios.get(`https://api.giftedtech.my.id/api/ai/gpt4?apikey=gifted&q=${encodeURIComponent(prompt)}`)
+          // Gemini key na ho ya saari models fail ho jayein -> free public endpoint
+          const res = await axios.get(`https://api.giftedtech.my.id/api/ai/gpt4?apikey=gifted&q=${encodeURIComponent(prompt)}`, { timeout: 15000 })
             .catch(() => null);
 
           if (res && res.data && res.data.result) {
             await m.reply(`🤖 *Saqib-MD AI:*\n\n${res.data.result}`);
+          } else if (!isKeyConfigured()) {
+            await m.reply('⚠️ *AI key set nahi hai.*\nBot owner ko chahiye *GEMINI_API_KEY* environment variable set karein.\nFree key: https://aistudio.google.com/apikey');
           } else {
-            const fallback = await axios.get(`https://api.duckduckgo.com/?q=${encodeURIComponent(prompt)}&format=json`).catch(() => null);
-            const ans = fallback?.data?.AbstractText || `Aapka sawal tha: "${prompt}". AI service is online and ready!`;
-            await m.reply(`🤖 *Saqib-MD AI:*\n\n${ans}`);
+            await m.reply('❌ AI ne is waqt jawab nahi diya. Thori dair baad dobara koshish karein.');
           }
         } catch (e) {
-          try {
-            const res = await axios.get(`https://api.giftedtech.my.id/api/ai/gpt4?apikey=gifted&q=${encodeURIComponent(prompt)}`);
-            if (res?.data?.result) {
-              return await m.reply(`🤖 *Saqib-MD AI:*\n\n${res.data.result}`);
-            }
-          } catch (_) {}
+          if (e?.message === 'GEMINI_KEY_INVALID') {
+            return await m.reply('🔑 *GEMINI_API_KEY invalid hai.*\nOwner: https://aistudio.google.com/apikey se nayi key banayein aur environment mein update karein.');
+          }
           await m.reply('❌ AI response error: ' + (e.response?.data?.error?.message || e.message));
         }
         break;
@@ -74,6 +53,17 @@ module.exports = {
         await m.reply(config.MESSAGES.WAIT);
 
         try {
+          // Priority 1: Gemini image model (Nano Banana) — same GEMINI_API_KEY.
+          const inline = await askGeminiImage(query);
+          if (inline) {
+            await sock.sendMessage(m.chat, {
+              image: inline,
+              caption: `🎨 *AI Art Generated for:* "${query}"\n⚡ *Powered by Gemini · Saqib-MD*`
+            }, { quoted: m });
+            return;
+          }
+
+          // Priority 2: free public generator (no key needed)
           const imageUrl = `https://api.giftedtech.my.id/api/ai/flux?apikey=gifted&prompt=${encodeURIComponent(query)}`;
           await sock.sendMessage(m.chat, {
             image: { url: imageUrl },

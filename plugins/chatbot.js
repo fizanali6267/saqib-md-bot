@@ -1,5 +1,6 @@
 const axios = require('axios');
 const config = require('../config');
+const { askGemini } = require('../lib/gemini');
 
 // In-memory conversation context per user/chat (stores last 5 messages)
 const chatMemory = new Map();
@@ -14,25 +15,15 @@ Instructions:
 5. User's name is ${userName}.`;
 
   try {
-    if (config.GEMINI_API_KEY) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.GEMINI_API_KEY}`;
-      const res = await axios.post(url, {
-        contents: [
-          { role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Message: "${userMessage}"` }] }
-        ]
-      }, {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': config.GEMINI_API_KEY
-        }
-      });
+    // SAQIB-MD: central Gemini client — model fallback + retry built in.
+    const reply = await askGemini(userMessage, { systemPrompt, timeoutMs: 20000 });
+    if (reply) return reply.trim();
 
-      const reply = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (reply) return reply.trim();
-    }
-
-    // High-speed fallback
-    const fallback = await axios.get(`https://api.giftedtech.my.id/api/ai/gpt4?apikey=gifted&q=${encodeURIComponent(userMessage)}`).catch(() => null);
+    // High-speed fallback (no key required)
+    const fallback = await axios.get(
+      `https://api.giftedtech.my.id/api/ai/gpt4?apikey=gifted&q=${encodeURIComponent(userMessage)}`,
+      { timeout: 12000 }
+    ).catch(() => null);
     if (fallback?.data?.result) return fallback.data.result;
 
     return `Han mere bhai, kya haal chaal hain? Saqib bhai ne mujhe aapke sath gup shup ke liye active kiya hua hai! Bolo kya chal raha hai?`;
