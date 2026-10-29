@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const pino = require('pino');
+const NodeCache = require('node-cache');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
