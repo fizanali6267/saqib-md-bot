@@ -1,0 +1,19 @@
+# Node Modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & Credentials (Protects your keys from public leaks)
+.env
+.env.local
+
+# WhatsApp Session Storage
+session/
+*.session
+
+# OS & Temp Files
+.DS_Store
+Thumbs.db
+tmp/
+*.tmp
