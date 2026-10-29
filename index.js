@@ -9,7 +9,11 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   Browsers,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  // Official Baileys helpers for the "Waiting for this message" fix
+  makeCacheableSignalKeyStore,
+  makeInMemoryStore,
+  proto
 } = require('@whiskeysockets/baileys');
 
 // Issue 3 Fix: Log-noise filter.
@@ -215,6 +219,19 @@ async function startBot() {
   const { state, saveCreds } = authState;
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
 
+  // Official Baileys fix: wrap the Signal key store in a cacheable layer so the
+  // ratchet keys are available instantly. Without it WhatsApp asks for keys
+  // that are still in flight and the chat stalls on "Waiting for this message".
+  const cachedKeys = (typeof makeCacheableSignalKeyStore === 'function')
+    ? makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
+    : state.keys;
+
+  // Official in-memory store: lets getMessage() re-serve any message Baileys
+  // has seen, which is what the recipient's phone asks for on a retry.
+  const store = (typeof makeInMemoryStore === 'function')
+    ? makeInMemoryStore({ logger: pino({ level: 'silent' }) })
+    : null;
+
   // Group metadata cache: avoids a network round-trip on every group message
   const groupMetadataCache = new Map();
   const cachedGroupMetadata = async (jid) => {
@@ -231,7 +248,7 @@ async function startBot() {
 
   const sock = makeWASocket({
     version,
-    auth: state,
+    auth: { creds: state.creds, keys: cachedKeys },
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     browser: Browsers.ubuntu('Chrome'),
@@ -252,10 +269,26 @@ async function startBot() {
     // Helps WhatsApp decrypt retried messages instead of showing
     // "Waiting for this message. This may take a while."
     getMessage: async (key) => {
+      // Step A: official in-memory store lookup
+      try {
+        if (store) {
+          const stored = await store.loadMessage(key.remoteJid, key.id);
+          if (stored?.message) return stored.message;
+        }
+      } catch (_) {}
+      // Step B: our own bounded cache (incoming + outgoing)
       const cached = messageStore.get(key.id);
-      return cached?.msg?.message || undefined;
+      if (cached?.msg?.message) return cached.msg.message;
+      if (cached?.message) return cached.message;
+      // Step C: CRITICAL — never return undefined. Returning an empty proto
+      // message lets the Signal ratchet step complete so the recipient's phone
+      // stops showing "Waiting for this message" forever.
+      return proto?.Message ? proto.Message.fromObject({}) : undefined;
     }
   });
+
+  // Bind the official store to the socket's event stream (message tracking)
+  try { if (store) store.bind(sock.ev); } catch (_) {}
 
   currentSock = sock;
   clearTimeout(guardTimer);
