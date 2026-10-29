@@ -282,18 +282,14 @@ async function startBot() {
         sock.readMessages([m.key]).catch(() => null);
       }
 
-      // Store message in cache for Anti-Delete
+      // Store message in cache for Anti-Delete + retry decryption (getMessage)
       if (m.id && m.chat) {
-        messageStore.set(m.id, {
+        cacheMessage(m.id, {
           sender: m.sender,
           chat: m.chat,
           msg: rawMsg,
           time: Date.now()
         });
-        if (messageStore.size > 2000) {
-          const firstKey = messageStore.keys().next().value;
-          messageStore.delete(firstKey);
-        }
       }
 
       // Auto Status Read & Auto Status React
