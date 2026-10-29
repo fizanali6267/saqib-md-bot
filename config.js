@@ -19,8 +19,15 @@ module.exports = {
   // Bot Identity & General Settings
   BOT_NAME: process.env.BOT_NAME || "SAQIB-MD",
   OWNER_NAME: process.env.OWNER_NAME || "Saqib Iqbal",
-  // Owner WhatsApp Number pre-configured for Saqib Iqbal
-  OWNER_NUMBER: process.env.OWNER_NUMBER || "923106762478",
+  // Owner WhatsApp Number(s) — OWNER_NUMBERS (comma separated) ko priority.
+  // OWNER_NUMBER sirf pehla number hota hai (backward compatibility).
+  OWNER_NUMBERS: (process.env.OWNER_NUMBERS || process.env.OWNER_NUMBER || "923106762478")
+    .split(',')
+    .map((s) => String(s).replace(/[^0-9]/g, ''))
+    .filter(Boolean),
+  OWNER_NUMBER: (process.env.OWNER_NUMBERS || process.env.OWNER_NUMBER || "923106762478")
+    .split(',')[0]
+    .replace(/[^0-9]/g, ''),
   PREFIX: process.env.PREFIX || ".",
   WORK_TYPE: process.env.WORK_TYPE || "public", // 'public' or 'private'
   PORT: PORT,
@@ -56,6 +63,14 @@ module.exports = {
   // banda owner ki session overwrite kar sakta tha. Default: owner-only.
   // Public portal wapas chalu karna ho to ALLOW_PUBLIC_PAIRING=true set karein.
   ALLOW_PUBLIC_PAIRING: parseBool(process.env.ALLOW_PUBLIC_PAIRING, false),
+
+  // Pairing allowlist: agar public pairing band hai (default), to sirf yeh
+  // numbers pairing kar sakte hain (OWNER_NUMBERS hamesha allowed hote hain).
+  // Comma separated, e.g. PAIRING_ALLOWED_NUMBERS=923008760205,923067846267
+  PAIRING_ALLOWED_NUMBERS: (process.env.PAIRING_ALLOWED_NUMBERS || '')
+    .split(',')
+    .map((s) => String(s).replace(/[^0-9]/g, ''))
+    .filter(Boolean),
 
   // Other Security Features (Fixed boolean parsing)
   ANTI_LINK: parseBool(process.env.ANTI_LINK, true),
@@ -104,10 +119,10 @@ const checkIsOwner = (m, sock) => {
   const botNumber = sock?.user?.id?.split(':')[0]?.split('@')[0];
   const senderNumber = m.sender?.split('@')[0]?.split(':')[0];
   if (botNumber && senderNumber === botNumber) return true;
-  const num = module.exports.OWNER_NUMBER;
-  if (num && num.trim() !== '') {
-    if (senderNumber === num) return true;
-  }
+  const owners = Array.isArray(module.exports.OWNER_NUMBERS) && module.exports.OWNER_NUMBERS.length
+    ? module.exports.OWNER_NUMBERS
+    : [module.exports.OWNER_NUMBER].filter(Boolean);
+  if (senderNumber && owners.includes(senderNumber)) return true;
   return false;
 };
 

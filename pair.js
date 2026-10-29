@@ -82,11 +82,17 @@ router.get('/', async (req, res) => {
   // Issue 7 Fix: Owner Session Hijack Protection.
   // Ye single-session bot hai: jo bhi number pair karega, wahi bot chalayega.
   // Pehle public portal par koi bhi banda owner ki primary session overwrite
-  // kar sakta tha. Ab sirf configured OWNER_NUMBER pair kar sakta hai, jab tak
-  // ALLOW_PUBLIC_PAIRING=true set na ho.
+  // kar sakta tha. Ab sirf OWNER_NUMBERS + PAIRING_ALLOWED_NUMBERS pair kar
+  // sakte hain, jab tak ALLOW_PUBLIC_PAIRING=true set na ho.
   if (!config.ALLOW_PUBLIC_PAIRING) {
-    const configuredOwner = sanitizeNumber(config.OWNER_NUMBER);
-    if (configuredOwner && num !== configuredOwner) {
+    const owners = (config.OWNER_NUMBERS || [config.OWNER_NUMBER])
+      .map((n) => sanitizeNumber(n))
+      .filter(Boolean);
+    const allowlist = (config.PAIRING_ALLOWED_NUMBERS || [])
+      .map((n) => sanitizeNumber(n))
+      .filter(Boolean);
+    const allowed = new Set([...owners, ...allowlist]);
+    if (allowed.size > 0 && !allowed.has(num)) {
       return res.status(403).json({
         status: 'error',
         message: 'Access Denied: Only the configured Bot Owner can link to this bot instance. Unauthorized session overwriting is blocked.'

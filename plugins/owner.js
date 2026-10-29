@@ -10,7 +10,7 @@ module.exports = {
   commands: ['mode', 'public', 'private', 'setpp', 'setppbot', 'block', 'unblock', 'broadcast', 'bc', 'join'],
   execute: async (sock, m, { command, args, prefix }) => {
     // Owner Only Authorization check
-    const isOwner = m.fromMe || m.sender.includes(config.OWNER_NUMBER);
+    const isOwner = config.checkIsOwner(m, sock);
     if (!isOwner) return m.reply(config.MESSAGES.OWNER_ONLY);
 
     switch (command) {

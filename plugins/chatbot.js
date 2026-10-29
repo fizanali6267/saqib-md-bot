@@ -38,7 +38,7 @@ module.exports = {
   generateChatbotReply,
   execute: async (sock, m, { command, args, prefix }) => {
     // Only owner can toggle bot global chat behavior
-    const isOwner = m.fromMe || m.sender.includes(config.OWNER_NUMBER);
+    const isOwner = config.checkIsOwner(m, sock);
     if (!isOwner) return m.reply(config.MESSAGES.OWNER_ONLY);
 
     const target = args[0]?.toLowerCase();

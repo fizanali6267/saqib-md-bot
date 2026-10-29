@@ -491,7 +491,7 @@ _⚡ Developed exclusively for Saqib Iqbal | Ultra-Fast Architecture_`;
       }
 
       case 'restart': {
-        if (!m.fromMe && !m.sender.includes(config.OWNER_NUMBER)) {
+        if (!config.checkIsOwner(m, sock)) {
           return m.reply(config.MESSAGES.OWNER_ONLY);
         }
         await m.reply('🔄 *Restarting Saqib-MD instance... Reconnecting within seconds.*');
