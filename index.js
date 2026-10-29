@@ -270,7 +270,7 @@ async function startBot() {
     shouldSyncHistoryMessage: () => false,
     generateHighQualityLinkPreview: false,
     markOnlineOnConnect: false,
-    connectTimeoutMs: 60000,
+    connectTimeoutMs: 20000,
     defaultQueryTimeoutMs: 60000,
     keepAliveIntervalMs: 30000,
     retryRequestDelayMs: 250,
@@ -406,6 +406,7 @@ async function startBot() {
     for (let rawMsg of messages) {
       if (!rawMsg.message) continue;
 
+      const __t0 = Date.now();
       const m = serialize(sock, rawMsg);
 
       // Safety net for the LID addressing issue: if the chat is still a LID
@@ -604,7 +605,7 @@ async function startBot() {
       const command = resolveAlias(rawCommand);
 
       // Lightweight command trace so slow/ignored commands are diagnosable
-      console.log(`\u2328\ufe0f  CMD ${config.PREFIX}${command} | from ${m.sender} | chat ${m.chat}`);
+      console.log(`\u2328\ufe0f  CMD ${config.PREFIX}${command} | from ${m.sender} | chat ${m.chat} | parse ${Date.now() - __t0}ms`);
 
       let handled = false;
       for (const plugin of plugins) {
