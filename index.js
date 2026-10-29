@@ -408,6 +408,17 @@ async function startBot() {
 
       const m = serialize(sock, rawMsg);
 
+      // Safety net for the LID addressing issue: if the chat is still a LID
+      // (no remoteJidAlt was provided), resolve it to the phone-number JID.
+      // Replying to a LID is what makes the phone show
+      // "Waiting for this message. This may take a while."
+      if (m.chat && m.chat.endsWith('@lid')) {
+        try {
+          const pn = await sock.signalRepository?.lidMapping?.getPNForLID?.(m.chat);
+          if (pn) m.chat = pn;
+        } catch (_) {}
+      }
+
       // Auto Read (Blue Tick vs Double Grey Tick)
       if (config.AUTO_READ && m.key && !m.fromMe) {
         sock.readMessages([m.key]).catch(() => null);
