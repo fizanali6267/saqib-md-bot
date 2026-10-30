@@ -107,10 +107,23 @@ const mockKeyModel = {
 // Graceful fallback for external dependencies when running offline in sandbox VM
 const origLoad = Module._load;
 Module._load = function(request, parent, isMain) {
+  // The test suite runs fully offline with in-memory mocks. If the real
+  // mongoose/baileys packages are installed in node_modules, Module._load
+  // succeeds and the mock branches below would never execute — causing a
+  // real network connection attempt (MongooseServerSelectionError).
+  // For these mocked modules we must bypass the real resolution entirely.
+  const MOCKED_MODULES = ['mongoose', '@whiskeysockets/baileys'];
+  const isMockedRequest = MOCKED_MODULES.includes(request);
   try {
-    return origLoad.apply(this, arguments);
+    if (!isMockedRequest) {
+      return origLoad.apply(this, arguments);
+    }
   } catch (err) {
-    if (err.code === 'MODULE_NOT_FOUND') {
+    if (err.code !== 'MODULE_NOT_FOUND') throw err;
+  }
+  // Fallback mock resolution (also used when the real package is missing in an
+  // offline sandbox). Only mongoose/baileys reach this point unconditionally.
+  {
       if (request === 'express') {
         const fn = () => {};
         fn.Router = () => {
@@ -121,7 +134,12 @@ Module._load = function(request, parent, isMain) {
         };
         return fn;
       }
-      if (request === 'pino') return () => ({ info: () => {}, error: () => {}, warn: () => {} });
+      if (request === 'pino') {
+        const mk = () => ({ info: () => {}, error: () => {}, warn: () => {}, debug: () => {}, trace: () => {}, fatal: () => {}, child: mk() });
+        const pinoFn = (...args) => mk();
+        pinoFn.default = pinoFn;
+        return pinoFn;
+      }
       if (request === 'mongoose') {
         return {
           Schema: function() { this.index = () => {}; },
@@ -164,9 +182,7 @@ Module._load = function(request, parent, isMain) {
           }
         };
       }
-    }
-    throw err;
-  }
+      }
 };
 
 async function runProductionTests() {
