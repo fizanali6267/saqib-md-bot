@@ -1285,7 +1285,10 @@ async function startBot() {
           // FIRE-AND-FORGET: run the command without blocking the message loop,
           // so one slow command can never stall the next .menu / command.
           plugin.execute(sock, m, { command, args, prefix: config.PREFIX })
-            .then(() => { try { config.persistSettings?.(); } catch (_) {} })
+            .then(() => {
+              console.log(`✅ ${command} handled in ${Date.now() - __t0}ms`);
+              try { config.persistSettings?.(); } catch (_) {}
+            })
             .catch(async (err) => {
               // Never leak internal errors (stack traces, API keys, URLs) to
               // the chat. Log it, tell the user to report it, and DM the owner
@@ -1315,6 +1318,9 @@ async function startBot() {
             });
           break;
         }
+      }
+      if (!handled) {
+        console.log(`❔ No plugin handled "${rawCommand}" (resolved: "${command}") in ${m.chat}`);
       }
     }
   });
