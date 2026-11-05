@@ -14,6 +14,7 @@ const {
 } = require('@whiskeysockets/baileys');
 const config = require('./config');
 const { useMongoDBAuthState, promoteSession, deleteSession, clearSignalSessions, SessionModel } = require('./lib/mongoAuth');
+const sessionStore = require('./lib/sessionStore');
 
 // In-memory active sockets, timeout handlers, and status tracker
 const activePairSockets = new Map();
@@ -93,7 +94,10 @@ router.get('/', async (req, res) => {
     return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || req.get('x-internal-pair') === 'saqib-md';
   })();
 
-  if (!config.ALLOW_PUBLIC_PAIRING && !isInternal) {
+  // In multi-session mode every number owns an ISOLATED session document, so
+  // pairing can never overwrite another user's bot. The old allowlist existed
+  // purely to stop session hijacking in single-session mode.
+  if (!config.MULTI_SESSION && !config.ALLOW_PUBLIC_PAIRING && !isInternal) {
     const owners = (config.OWNER_NUMBERS || [config.OWNER_NUMBER])
       .map((n) => sanitizeNumber(n))
       .filter(Boolean);
@@ -138,7 +142,11 @@ router.get('/', async (req, res) => {
     closePairSocket(num, 'New pairing request initiated');
     pairingStatusMap.set(num, 'initiating');
 
-    const tempSessionId = `temp_pair_${num}_${Date.now()}`;
+    // MULTI-SESSION: the pairing socket writes credentials straight into this
+    // number's OWN session document. No promote/copy step is needed any more,
+    // and pairing a second number no longer destroys the first one.
+    const tempSessionId = `sess_${num}`;
+    const targetSessionId = tempSessionId;
     const tempSessionDir = path.join(os.tmpdir(), `pair_session_${num}_${Date.now()}`);
     let authState;
     // Tracks whether this pairing run is actually backed by MongoDB. If Atlas
@@ -236,79 +244,46 @@ router.get('/', async (req, res) => {
             console.error('Welcome message error:', e?.message || e);
           }
 
-          // CRITICAL FIX: close the pairing socket FIRST so two sockets never
-          // share the same Signal session (that caused "Decrypted message with closed session")
+          // MULTI-SESSION: this socket already wrote valid credentials into
+          // `sess_<number>`. We only need to register the session and boot its
+          // own instance — the previously linked numbers keep running.
           setTimeout(async () => {
             try { closePairSocket(num, 'Pairing completed successfully'); } catch (_) {}
 
-            // CRITICAL: stop the live bot socket BEFORE promoting the new
-            // credentials. The running socket owns the same session document
-            // and rewrites it with its old creds on every `creds.update`, which
-            // invalidates the device WhatsApp has just linked -> the user sees
-            // "Logging in…" followed by "Could not link device".
+            const sessionId = `sess_${num}`;
+
+            // Register (or re-enable) this number in the session registry.
+            try {
+              await sessionStore.ensureForNumber(num, {
+                sessionId,
+                ownerName: config.OWNER_NAME,
+                botName: config.BOT_NAME
+              });
+              console.log(`🗂️  Registered session ${sessionId} for ${num}`);
+            } catch (e) {
+              console.error('Session registry error:', e?.message || e);
+            }
+
+            // Wipe the pairing-time Signal sessions so the fresh device builds
+            // clean ratchets (otherwise: Bad MAC + "Waiting for this message").
+            try {
+              const cleared = await clearSignalSessions(sessionId);
+              if (cleared) console.log(`🧹 Cleared ${cleared} pairing-time Signal sessions.`);
+            } catch (_) {}
+
+            // Boot THIS session only. Other sessions are untouched.
             try {
               const botIndex = require('./index');
-              if (botIndex && typeof botIndex.pauseBot === 'function') {
-                await botIndex.pauseBot('Pausing main bot before promoting new pairing');
-              }
-            } catch (e) {
-              console.log('pauseBot unavailable:', e?.message || e);
-            }
-
-            // Promote validated credentials into the primary bot session
-            const promoteToLocalSession = () => {
-              const mainSessionDir = path.join(__dirname, 'session');
-              if (!fs.existsSync(mainSessionDir)) fs.mkdirSync(mainSessionDir, { recursive: true });
-              // wipe stale main session before promoting a fresh one
-              for (const old of fs.readdirSync(mainSessionDir)) {
-                try { fs.rmSync(path.join(mainSessionDir, old), { recursive: true, force: true }); } catch (_) {}
-              }
-              const files = fs.readdirSync(tempSessionDir);
-              for (let f of files) {
-                // Skip pairing-time Signal sessions so they rebuild cleanly.
-                if (/^session-.*\.json$/.test(f)) continue;
-                fs.copyFileSync(path.join(tempSessionDir, f), path.join(mainSessionDir, f));
-              }
-            };
-
-            try {
-              if (usingMongoForPair) {
-                const targetId = config.SESSION_ID || 'saqib_md_session';
-                await promoteSession(tempSessionId, targetId);
-                // CRITICAL: wipe Signal sessions created by the pairing socket.
-                // Warna naya device un desynced ratchets ko reuse karta hai aur
-                // har message par "Bad MAC" + "Waiting for this message" aata hai.
-                const cleared = await clearSignalSessions(targetId);
-                if (cleared) console.log(`\ud83e\uddf9 Cleared ${cleared} pairing-time Signal sessions (they will rebuild fresh).`);
-              } else {
-                promoteToLocalSession();
-              }
-              console.log('\ud83d\udcbe Session promoted to main bot storage.');
-            } catch (e) {
-              console.error('Session promote error:', e?.message || e);
-              // Mongo promotion failed mid-flight \u2014 keep the freshly paired
-              // credentials locally so the bot can still come online.
-              try {
-                promoteToLocalSession();
-                console.log('\ud83d\udcbe Session promoted to LOCAL storage as a fallback.');
-              } catch (e2) {
-                console.error('Local session fallback error:', e2?.message || e2);
-              }
-            }
-
-            if (!usingMongoForPair) {
-              try { fs.rmSync(tempSessionDir, { recursive: true, force: true }); } catch (_) {}
-            }
-
-            // Boot the main bot AFTER the pairing socket is fully closed
-            try {
-              const botIndex = require('./index');
-              if (botIndex && typeof botIndex.reloadBot === 'function') {
-                console.log('\ud83d\udd04 Booting main bot with new session...');
-                setTimeout(() => botIndex.reloadBot(), 1500);
+              if (botIndex && typeof botIndex.startBot === 'function') {
+                console.log(`🚀 Booting session ${sessionId}...`);
+                setTimeout(() => {
+                  botIndex.startBot(sessionId).catch((err) =>
+                    console.error(`Session ${sessionId} boot error:`, err?.message || err)
+                  );
+                }, 1500);
               }
             } catch (err) {
-              console.log('Main bot reload dispatch info:', err?.message || err);
+              console.log('Session boot dispatch info:', err?.message || err);
             }
           }, 2500);
         }

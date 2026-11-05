@@ -53,11 +53,11 @@ for (const __level of ['log', 'info', 'debug']) {
 // prekey bundle. The bot heals itself within one message.
 let __badMacWindow = 0;
 const __healQueue = new Set();
-const __healSignalSession = (jid) => {
+const __healSignalSession = (jid, sessionId) => {
   if (!jid || __healQueue.has(jid)) return;
   __healQueue.add(jid);
   try {
-    const sid = config.SESSION_ID || 'saqib_md_session';
+    const sid = sessionId || config.SESSION_ID || 'saqib_md_session';
     if (!config.MONGO_URI) return;
     // Evict through the live key store first: makeCacheableSignalKeyStore keeps
     // its own copy, so deleting only from MongoDB would let the corrupt ratchet
@@ -65,8 +65,10 @@ const __healSignalSession = (jid) => {
     const evict = async () => {
       let ok = false;
       try {
-        if (currentKeysStore && typeof currentKeysStore.set === 'function') {
-          await currentKeysStore.set({ session: { [jid]: null } });
+        const __inst = getInstance(sid);
+        const __ks = __inst && __inst.keysStore;
+        if (__ks && typeof __ks.set === 'function') {
+          await __ks.set({ session: { [jid]: null } });
           ok = true;
         }
       } catch (_) {}
@@ -111,6 +113,7 @@ const config = require('./config');
 const { serialize } = require('./lib/serialize');
 const lid = require('./lib/lid');
 const identity = require('./lib/identity');
+const sessionContext = require('./lib/sessionContext');
 const { useMongoDBAuthState } = require('./lib/mongoAuth');
 const { useFastAuthState } = require('./lib/fastAuthState');
 const { resolveAlias } = require('./lib/aliasMap');
@@ -266,7 +269,8 @@ app.get('/settings', (req, res) => {
 
 app.get('/selftest', async (req, res) => {
   try {
-    if (!currentSock) return res.status(503).json({ ok: false, error: 'socket not connected' });
+    const inst = req.query.session ? getInstance(req.query.session) : getPrimaryInstance();
+    if (!inst || !inst.sock) return res.status(503).json({ ok: false, error: 'socket not connected' });
     // Accept either a bare number or a FULL jid (e.g. 71550548049938@lid or
     // 120363426511617473@g.us) so the exact chat that appears broken can be
     // probed directly.
@@ -280,7 +284,7 @@ app.get('/selftest', async (req, res) => {
       jid = `${num}@s.whatsapp.net`;
     }
     const t0 = Date.now();
-    const sent = await currentSock.sendMessage(jid, {
+    const sent = await inst.sock.sendMessage(jid, {
       text: `🧪 *SELF-TEST*\nBot is able to deliver to this chat.\n${new Date().toISOString()}`
     });
     res.json({
@@ -522,21 +526,57 @@ function cacheMessage(id, entry) {
     messageStore.delete(oldest);
   }
 }
-let onlinePresenceInterval = null;
-let autoBioInterval = null;
-let currentSock = null;
-let currentKeysStore = null; // live Signal key store (for self-heal eviction)
+// ---- MULTI-SESSION INSTANCE REGISTRY -------------------------------------
+// Each linked WhatsApp number gets its own isolated instance: socket, timers,
+// reconnect state, watchdog, settings and owner number. `instances` maps
+// sessionId -> instance. Nothing below may use module-level mutable state, or
+// two sessions would fight over the same socket.
+const instances = new Map();
+
+const DEFAULT_SESSION_ID = config.SESSION_ID || 'saqib_md_session';
+
+function createInstanceState(sessionId) {
+  return {
+    sessionId,
+    sock: null,
+    keysStore: null,          // live Signal key store (for self-heal eviction)
+    isStarting: false,        // true while a socket is being created
+    reconnectTimer: null,     // pending auto-reconnect timer
+    reconnectAttempts: 0,     // exponential backoff counter
+    lastOpenAt: 0,            // timestamp of last successful connection
+    lastActivityAt: 0,        // timestamp of last proven live activity
+    watchdogTimer: null,      // 24/7 connection health watchdog
+    suppressReconnectUntil: 0,// ignore close events until this timestamp
+    onlinePresenceInterval: null,
+    autoBioInterval: null,
+    paused: false,
+    settings: null,           // per-session settings object
+    ownerNumber: null,
+    ownerNumbers: [],
+    botName: null,
+    startedAt: null,
+    status: 'idle'
+  };
+}
+
+function getInstance(sessionId) {
+  return instances.get(sessionId || DEFAULT_SESSION_ID) || null;
+}
+
+/** First running instance — used by legacy single-session routes. */
+function getPrimaryInstance() {
+  for (const inst of instances.values()) {
+    if (inst.sock) return inst;
+  }
+  return instances.values().next().value || null;
+}
+
 // Ids of messages the bot itself sent — used to stop "Message Yourself" loops.
 const botSentMessageIds = new Set();
 
-// ---- Connection manager guards (prevents duplicate sockets sharing one session) ----
-let isStarting = false;          // true while a socket is being created
-let reconnectTimer = null;       // pending auto-reconnect timer
-let reconnectAttempts = 0;       // exponential backoff counter
-let lastOpenAt = 0;              // timestamp of last successful connection
-let lastActivityAt = 0;          // timestamp of last proven live activity (creds/msgs/presence)
-let watchdogTimer = null;        // 24/7 connection health watchdog
-let suppressReconnectUntil = 0;  // ignore close events until this timestamp (manual reload)
+// ---- Connection manager guards ----
+// NOTE: these used to be module-level globals. They now live on each instance
+// (see createInstanceState) so sessions cannot interfere with each other.
 
 // ---- Single-instance lock -------------------------------------------------
 // Two processes connecting with the same WhatsApp creds make the server kill
@@ -589,13 +629,13 @@ acquireInstanceLock();
 // Baileys can occasionally go silent (half-open socket) without firing a
 // 'close' event. This watchdog checks the underlying WebSocket every 90s and
 // forces a clean restart if the socket is dead or has been offline too long.
-function startWatchdog() {
-  if (watchdogTimer) clearInterval(watchdogTimer);
-  watchdogTimer = setInterval(() => {
+function startWatchdog(inst) {
+  if (inst.watchdogTimer) clearInterval(inst.watchdogTimer);
+  inst.watchdogTimer = setInterval(() => {
     try {
-      if (Date.now() < suppressReconnectUntil) return; // manual reload in progress
-      if (reconnectTimer) return;                      // reconnect already pending
-      const ws = currentSock && currentSock.ws;
+      if (Date.now() < inst.suppressReconnectUntil) return; // manual reload in progress
+      if (inst.reconnectTimer) return;                      // reconnect already pending
+      const ws = inst.sock && inst.sock.ws;
       // IMPORTANT: Baileys exposes `sock.ws` as a WebSocketClient wrapper which
       // has an `isOpen` getter — NOT a `readyState` property. Checking
       // `ws.readyState` always yields undefined and made the watchdog kill a
@@ -606,45 +646,92 @@ function startWatchdog() {
         else if (typeof ws.readyState === 'number') alive = ws.readyState === 1;
         else alive = true; // unknown wrapper — do not kill a live socket
       }
-      const offlineFor = lastOpenAt ? Date.now() - lastOpenAt : 0;
-      const idleFor = lastActivityAt ? Date.now() - lastActivityAt : offlineFor;
+      const offlineFor = inst.lastOpenAt ? Date.now() - inst.lastOpenAt : 0;
+      const idleFor = inst.lastActivityAt ? Date.now() - inst.lastActivityAt : offlineFor;
       // Restart only when the socket is genuinely closed AND we have had no
       // proven activity for a long while (avoids false-positive restarts).
       if (!alive && offlineFor > 120000 && idleFor > 300000) {
         console.log('\u{1F6DF} Watchdog: socket is down, forcing restart...');
-        try { currentSock && currentSock.end(undefined); } catch (_) {}
-        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-        startBot().catch((err) => console.error('Watchdog restart error:', err));
+        try { inst.sock && inst.sock.end(undefined); } catch (_) {}
+        if (inst.reconnectTimer) { clearTimeout(inst.reconnectTimer); inst.reconnectTimer = null; }
+        startBot(inst.sessionId).catch((err) => console.error('Watchdog restart error:', err));
       }
     } catch (e) {
       console.error('Watchdog error:', e && e.message);
     }
   }, 90000);
-  if (watchdogTimer.unref) watchdogTimer.unref();
+  if (inst.watchdogTimer.unref) inst.watchdogTimer.unref();
 }
 
-async function startBot() {
-  // Guard: never build two sockets at the same time.
-  if (isStarting) {
-    console.log('⏳ startBot() already in progress — skipping duplicate call.');
-    return currentSock;
+async function startBot(sessionId = DEFAULT_SESSION_ID) {
+  sessionId = sessionId || DEFAULT_SESSION_ID;
+
+  // ---- Resolve (or create) this session's isolated instance -------------
+  let inst = instances.get(sessionId);
+  if (!inst) {
+    inst = createInstanceState(sessionId);
+    instances.set(sessionId, inst);
   }
-  isStarting = true;
+
+  // Load per-session settings + owner from the registry. Falls back to the
+  // global config for the legacy single session.
+  try {
+    const store = require('./lib/sessionStore');
+    const doc = await store.get(sessionId);
+    if (doc) {
+      inst.settings = doc.settings || store.defaultSettings();
+      inst.ownerNumber = doc.ownerNumber || config.OWNER_NUMBER;
+      inst.ownerNumbers = doc.ownerNumbers && doc.ownerNumbers.length
+        ? doc.ownerNumbers
+        : [inst.ownerNumber].filter(Boolean);
+      inst.botName = doc.botName || config.BOT_NAME;
+      // Keep the global object in sync for non-session code paths.
+      if (inst.ownerNumber) config.OWNER_NUMBER = inst.ownerNumber;
+      config.OWNER_NUMBERS = inst.ownerNumbers;
+      if (inst.botName) config.BOT_NAME = inst.botName;
+    }
+  } catch (e) {
+    console.log(`⚠️  Could not load settings for ${sessionId}:`, e?.message || e);
+  }
+  if (!inst.settings) {
+    inst.settings = require('./lib/sessionStore').defaultSettings();
+  }
+
+  // Everything inside this function runs with this session's context active,
+  // so `config.PREFIX`, `config.WORK_TYPE`, `config.checkIsOwner` resolve to
+  // THIS session's values.
+  const sessionCtx = { sessionId, settings: inst.settings, inst };
+
+  inst.status = 'starting';
+  inst.startedAt = Date.now();
+
+  // Guard: never build two sockets at the same time.
+  if (inst.isStarting) {
+    console.log('⏳ startBot() already in progress — skipping duplicate call.');
+    return inst.sock;
+  }
+  inst.isStarting = true;
   // Watchdog: if socket creation hangs/throws, release the guard after 25s.
-  const guardTimer = setTimeout(() => { isStarting = false; }, 25000);
+  const guardTimer = setTimeout(() => { inst.isStarting = false; }, 25000);
   if (guardTimer.unref) guardTimer.unref();
 
   console.log(`🚀 Starting ${config.BOT_NAME}...`);
 
   let authState;
-  const sessionDir = path.join(__dirname, 'session');
+  // Legacy/default session keeps the original `session/` directory so existing
+  // credentials survive the upgrade; every additional session gets its own.
+  const sessionDir = sessionId === DEFAULT_SESSION_ID
+    ? path.join(__dirname, 'session')
+    : path.join(__dirname, 'session', sessionId);
 
   if (config.MONGO_URI) {
     // Resilience: agar Atlas down ho / IP whitelist na ho / credentials ghalat
     // hon, bot ko marne ke bajaye disk session par fall back kar jate hain.
     // Warna ek DB issue poore bot ko offline kar deta hai.
     try {
-      authState = await useMongoDBAuthState(config.MONGO_URI, config.SESSION_ID || 'saqib_md_session');
+      // CRITICAL: each session MUST use its own credential document. Sharing one
+      // session id would make every linked number overwrite the same creds.
+      authState = await useMongoDBAuthState(config.MONGO_URI, sessionId);
       console.log('🗄️  Session backend: MongoDB Atlas');
     } catch (mongoErr) {
       console.error('⚠️  MongoDB unavailable — falling back to local file session.');
@@ -665,7 +752,7 @@ async function startBot() {
   // saving its old creds it silently overwrites the new device's keys and
   // WhatsApp answers "Could not link device". pauseBot() sets this flag.
   const guardedSaveCreds = async () => {
-    if (global.__SAQIB_PAUSED) return;
+    if (inst.paused) return;
     try { await saveCreds(); } catch (_) {}
   };
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
@@ -676,7 +763,7 @@ async function startBot() {
   const cachedKeys = (typeof makeCacheableSignalKeyStore === 'function')
     ? makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
     : state.keys;
-  currentKeysStore = cachedKeys;
+  inst.keysStore = cachedKeys;
 
   // Official in-memory store: lets getMessage() re-serve any message Baileys
   // has seen, which is what the recipient's phone asks for on a retry.
@@ -702,7 +789,7 @@ async function startBot() {
     const hit = groupMetadataCache.get(jid);
     if (hit && Date.now() - hit.at < GROUP_META_TTL) return hit.data;
     try {
-      const data = await currentSock.groupMetadata(jid);
+      const data = await inst.sock.groupMetadata(jid);
       return rememberGroup(jid, data);
     } catch (_) {
       // Serve stale data rather than nothing: sending a message needs a
@@ -793,9 +880,9 @@ async function startBot() {
     });
   } catch (_) {}
 
-  currentSock = sock;
+  inst.sock = sock;
   clearTimeout(guardTimer);
-  isStarting = false; // socket built — release the creation guard
+  inst.isStarting = false; // socket built — release the creation guard
 
   // Issue 1 Fix: cache every OUTGOING message too. Previously only incoming
   // messages were stored, so when a recipient's phone asked the bot to
@@ -864,49 +951,51 @@ async function startBot() {
     return sent;
   };
 
-  sock.ev.on('creds.update', () => { lastActivityAt = Date.now(); guardedSaveCreds(); });
+  sock.ev.on('creds.update', () => { inst.lastActivityAt = Date.now(); guardedSaveCreds(); });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
 
     if (connection === 'close') {
-      if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
-      if (autoBioInterval) clearInterval(autoBioInterval);
+      if (inst.onlinePresenceInterval) clearInterval(inst.onlinePresenceInterval);
+      if (inst.autoBioInterval) clearInterval(inst.autoBioInterval);
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       // Manual reload in progress: ignore this close event entirely.
-      if (Date.now() < suppressReconnectUntil) {
+      if (Date.now() < inst.suppressReconnectUntil) {
         console.log('🔇 Suppressed reconnect (manual reload in progress).');
         return;
       }
 
+      inst.status = 'closed';
       console.log(`Connection closed with code: ${statusCode}. Reconnecting: ${shouldReconnect}`);
 
       // Make sure the dead socket is fully torn down before reconnecting.
       try { sock.end(undefined); } catch (_) {}
 
       if (shouldReconnect) {
-        if (reconnectTimer) return; // already scheduled — do not stack reconnects
+        if (inst.reconnectTimer) return; // already scheduled — do not stack reconnects
         // Exponential backoff with jitter so a flaky network cannot hammer
         // WhatsApp and get the device logged out. Caps at 60s.
-        const base = Math.min(60000, 3000 * Math.pow(2, Math.min(reconnectAttempts, 5)));
+        const base = Math.min(60000, 3000 * Math.pow(2, Math.min(inst.reconnectAttempts, 5)));
         const delay = base + Math.floor(Math.random() * 2000);
-        reconnectAttempts += 1;
-        console.log(`♻️ Reconnect attempt #${reconnectAttempts} in ${delay}ms`);
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          startBot().catch(err => console.error('Bot launch error:', err));
+        inst.reconnectAttempts += 1;
+        console.log(`♻️ Reconnect attempt #${inst.reconnectAttempts} in ${delay}ms`);
+        inst.reconnectTimer = setTimeout(() => {
+          inst.reconnectTimer = null;
+          startBot(inst.sessionId).catch(err => console.error('Bot launch error:', err));
         }, delay);
       } else {
         console.log('❌ Device logged out. Please link your phone again.');
       }
     } else if (connection === 'open') {
       console.log(`✨ ${config.BOT_NAME} connected and ready to serve!`);
-      reconnectAttempts = 0;
-      lastOpenAt = Date.now();
-      lastActivityAt = Date.now();
-      startWatchdog();
+      inst.reconnectAttempts = 0;
+      inst.lastOpenAt = Date.now();
+      inst.lastActivityAt = Date.now();
+      inst.status = 'open';
+      startWatchdog(inst);
 
       // Remember our own LID <-> phone pair (needed for self-chat replies).
       try {
@@ -935,19 +1024,19 @@ async function startBot() {
       }, 6000);
 
       // Always Online Heartbeat Loop (Cleaned up on reconnect)
-      if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
-      onlinePresenceInterval = setInterval(async () => {
+      if (inst.onlinePresenceInterval) clearInterval(inst.onlinePresenceInterval);
+      inst.onlinePresenceInterval = setInterval(async () => {
         if (config.ALWAYS_ONLINE) {
           try {
             await sock.sendPresenceUpdate('available');
-            lastActivityAt = Date.now();
+            inst.lastActivityAt = Date.now();
           } catch (_) {}
         }
       }, 25000);
 
       // Issue 10 Fix: Auto-Bio periodic enforcement
-      if (autoBioInterval) clearInterval(autoBioInterval);
-      autoBioInterval = setInterval(async () => {
+      if (inst.autoBioInterval) clearInterval(inst.autoBioInterval);
+      inst.autoBioInterval = setInterval(async () => {
         if (config.AUTO_BIO && sock?.user) {
           try {
             const time = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Karachi', hour12: true });
@@ -997,7 +1086,8 @@ async function startBot() {
 
   // Message Handler
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    lastActivityAt = Date.now();
+    return sessionContext.runWithSession(sessionCtx, async () => {
+    inst.lastActivityAt = Date.now();
     // CRITICAL FIX: "Message Yourself" (apne inbox) ke messages WhatsApp
     // `type: 'append'` ke saath bhejta hai, groups/DM `type: 'notify'`.
     // Pehle sirf 'notify' allow tha, is liye self-chat mein koi command
@@ -1323,10 +1413,12 @@ async function startBot() {
         console.log(`❔ No plugin handled "${rawCommand}" (resolved: "${command}") in ${m.chat}`);
       }
     }
+    });
   });
 
   // Granular Anti-Delete Handler (Same Chat vs Inbox with Sender/Deleter tags)
   sock.ev.on('messages.update', async (updates) => {
+    return sessionContext.runWithSession(sessionCtx, async () => {
     if (!config.ANTI_DELETE) return;
 
     for (const update of updates) {
@@ -1414,6 +1506,7 @@ async function startBot() {
         }
       }
     }
+    });
   });
 
 
@@ -1421,23 +1514,27 @@ async function startBot() {
 }
 
 // Issue 5 Fix: reloadBot function to reload main bot connection when new pairing completes
-async function reloadBot() {
-  console.log('🔄 Reloading main bot connection with new pairing credentials...');
-  global.__SAQIB_PAUSED = false;
+async function reloadBot(sessionId = DEFAULT_SESSION_ID) {
+  sessionId = sessionId || DEFAULT_SESSION_ID;
+  console.log(`🔄 Reloading bot connection for ${sessionId} with new credentials...`);
+  const inst = getInstance(sessionId) || createInstanceState(sessionId);
+  instances.set(sessionId, inst);
+
+  inst.paused = false;
   // Prevent the old socket's close event from triggering a second reconnect.
-  suppressReconnectUntil = Date.now() + 8000;
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (currentSock) {
+  inst.suppressReconnectUntil = Date.now() + 8000;
+  if (inst.reconnectTimer) { clearTimeout(inst.reconnectTimer); inst.reconnectTimer = null; }
+  if (inst.sock) {
     try {
-      if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
-      if (autoBioInterval) clearInterval(autoBioInterval);
-      currentSock.end(new Error('Reloading with updated credentials'));
+      if (inst.onlinePresenceInterval) clearInterval(inst.onlinePresenceInterval);
+      if (inst.autoBioInterval) clearInterval(inst.autoBioInterval);
+      inst.sock.end(new Error('Reloading with updated credentials'));
     } catch (_) {}
-    currentSock = null;
+    inst.sock = null;
   }
   // Small delay lets the old socket fully release the Signal session.
   await new Promise(r => setTimeout(r, 800));
-  await startBot().catch(err => console.error('Bot reload error:', err));
+  await startBot(sessionId).catch(err => console.error('Bot reload error:', err));
 }
 
 /**
@@ -1449,31 +1546,153 @@ async function reloadBot() {
  * OLD creds — which invalidates the device WhatsApp just linked, producing
  * "Could not link device" right after "Logging in…".
  */
-async function pauseBot(reason = 'Pausing for device pairing') {
-  console.log(`⏸️  ${reason}`);
-  global.__SAQIB_PAUSED = true;
-  suppressReconnectUntil = Date.now() + 10 * 60 * 1000;
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
-  if (autoBioInterval) clearInterval(autoBioInterval);
-  if (currentSock) {
-    try { currentSock.end(new Error(reason)); } catch (_) {}
-    currentSock = null;
+async function pauseBot(sessionId = DEFAULT_SESSION_ID, reason = 'Pausing for device pairing') {
+  // Backwards compatibility: pauseBot('some reason') from older call sites.
+  if (sessionId && !instances.has(sessionId) && typeof reason === 'string' && reason === 'Pausing for device pairing') {
+    reason = sessionId;
+    sessionId = DEFAULT_SESSION_ID;
   }
+  sessionId = sessionId || DEFAULT_SESSION_ID;
+  const inst = getInstance(sessionId);
+  console.log(`⏸️  ${reason} (${sessionId})`);
+  if (!inst) return;
+  inst.paused = true;
+  inst.suppressReconnectUntil = Date.now() + 10 * 60 * 1000;
+  if (inst.reconnectTimer) { clearTimeout(inst.reconnectTimer); inst.reconnectTimer = null; }
+  if (inst.onlinePresenceInterval) clearInterval(inst.onlinePresenceInterval);
+  if (inst.autoBioInterval) clearInterval(inst.autoBioInterval);
+  if (inst.sock) {
+    try { inst.sock.end(new Error(reason)); } catch (_) {}
+    inst.sock = null;
+  }
+  inst.status = 'paused';
   // Let the server release the device slot for this account.
   await new Promise(r => setTimeout(r, 1200));
 }
 
-module.exports = { startBot, reloadBot, pauseBot, app };
+// ---------------------------------------------------------------------------
+// SESSION MANAGER
+// ---------------------------------------------------------------------------
+const sessionStore = require('./lib/sessionStore');
+
+const SessionManager = {
+  /** Boot every enabled session from the registry (plus the legacy session). */
+  async startAll() {
+    let docs = [];
+    try {
+      await sessionStore.migrateLegacyIfNeeded();
+      docs = await sessionStore.listEnabled();
+    } catch (e) {
+      console.log('⚠️  Session registry unavailable:', e?.message || e);
+    }
+
+    if (!docs.length) {
+      // No registry yet — fall back to the legacy single session so an existing
+      // deployment keeps working through the upgrade.
+      if (config.MONGO_URI || fs.existsSync(path.join(__dirname, 'session/creds.json'))) {
+        console.log('ℹ️  No registry entries — starting legacy session.');
+        await startBot(DEFAULT_SESSION_ID).catch((err) => console.error('Bot launch error:', err));
+      } else {
+        console.log('ℹ️ No active session found. Open the web portal to generate a Pairing Code.');
+      }
+      return;
+    }
+
+    console.log(`🗂️  Starting ${docs.length} session(s) from registry...`);
+    for (const doc of docs) {
+      try {
+        await startBot(doc.sessionId);
+        // Stagger starts so N sockets do not hammer WhatsApp at once.
+        await new Promise((r) => setTimeout(r, 2500));
+      } catch (e) {
+        console.error(`❌ Session ${doc.sessionId} failed to start:`, e?.message || e);
+      }
+    }
+  },
+
+  async start(sessionId) {
+    await sessionStore.setEnabled(sessionId, true);
+    return startBot(sessionId);
+  },
+
+  async stop(sessionId) {
+    await sessionStore.setEnabled(sessionId, false);
+    await pauseBot(sessionId, 'Session stopped by owner');
+  },
+
+  async remove(sessionId) {
+    await pauseBot(sessionId, 'Session removed by owner');
+    instances.delete(sessionId);
+    await sessionStore.remove(sessionId);
+  },
+
+  list() {
+    return [...instances.values()].map((i) => ({
+      sessionId: i.sessionId,
+      ownerNumber: i.ownerNumber,
+      botName: i.botName,
+      status: i.status,
+      connected: !!(i.sock && i.sock.user),
+      jid: i.sock?.user?.id || null,
+      lid: i.sock?.user?.lid || null,
+      startedAt: i.startedAt,
+      lastActivityAt: i.lastActivityAt
+    }));
+  },
+
+  get: getInstance,
+  primary: getPrimaryInstance,
+  instances
+};
+
+// ---- Multi-session REST API ------------------------------------------------
+app.get('/sessions', async (req, res) => {
+  try {
+    const runtime = SessionManager.list();
+    let registry = [];
+    try { registry = await sessionStore.list(); } catch (_) {}
+    res.json({
+      ok: true,
+      count: runtime.length,
+      runtime,
+      registry: registry.map((d) => ({
+        sessionId: d.sessionId,
+        ownerNumber: d.ownerNumber,
+        enabled: d.enabled !== false,
+        createdAt: d.createdAt
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get('/sessions/start', async (req, res) => {
+  try {
+    const id = String(req.query.session || '').trim();
+    if (!id) return res.status(400).json({ ok: false, error: 'session required' });
+    await SessionManager.start(id);
+    res.json({ ok: true, session: id, status: 'starting' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get('/sessions/stop', async (req, res) => {
+  try {
+    const id = String(req.query.session || '').trim();
+    if (!id) return res.status(400).json({ ok: false, error: 'session required' });
+    await SessionManager.stop(id);
+    res.json({ ok: true, session: id, status: 'stopped' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+module.exports = { startBot, reloadBot, pauseBot, app, SessionManager, getInstance, getPrimaryInstance, instances, DEFAULT_SESSION_ID };
 
 // Start Web Server for Pairing Portal (Binding 0.0.0.0 for external network access)
 app.listen(config.PORT, '0.0.0.0', () => {
   console.log(`🌐 Saqib-MD Pairing Portal & Web Server running on port ${config.PORT}`);
-  if (config.MONGO_URI || fs.existsSync(path.join(__dirname, 'session/creds.json'))) {
-    startBot().catch(err => console.error('Bot launch error:', err));
-  } else {
-    console.log('ℹ️ No active session found. Open the web portal to generate a Pairing Code.');
-  }
+  SessionManager.startAll().catch((err) => console.error('Session manager error:', err));
 });
-
-module.exports = { startBot, reloadBot, pauseBot, app };

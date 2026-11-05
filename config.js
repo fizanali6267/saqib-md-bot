@@ -63,6 +63,9 @@ module.exports = {
   // banda owner ki session overwrite kar sakta tha. Default: owner-only.
   // Public portal wapas chalu karna ho to ALLOW_PUBLIC_PAIRING=true set karein.
   ALLOW_PUBLIC_PAIRING: parseBool(process.env.ALLOW_PUBLIC_PAIRING, false),
+  // Multi-session: each paired number gets its own isolated bot instance.
+  // When enabled, any number may pair (it cannot touch other sessions).
+  MULTI_SESSION: parseBool(process.env.MULTI_SESSION, false),
 
   // Pairing allowlist: agar public pairing band hai (default), to sirf yeh
   // numbers pairing kar sakte hain (OWNER_NUMBERS hamesha allowed hote hain).
@@ -252,6 +255,18 @@ const loadSettings = () => {
 
 let __lastSettingsJson = null;
 const persistSettings = () => {
+  // In multi-session mode the ACTIVE session owns its own settings document.
+  // Writing them into the shared settings.json would make one session's
+  // `.autoreact off` silently switch it off for every other session.
+  try {
+    const ctx = require('./lib/sessionContext').current();
+    if (ctx && ctx.settings && ctx.sessionId) {
+      const store = require('./lib/sessionStore');
+      store.saveSettings(ctx.sessionId, ctx.settings).catch(() => {});
+      return true;
+    }
+  } catch (_) {}
+
   try {
     const out = { __v: SETTINGS_VERSION };
     for (const k of PERSISTED_KEYS) out[k] = module.exports[k];
@@ -269,3 +284,47 @@ const persistSettings = () => {
 
 module.exports.persistSettings = persistSettings;
 loadSettings();
+
+// ---------------------------------------------------------------------------
+// MULTI-SESSION: per-session settings resolution
+// ---------------------------------------------------------------------------
+// Every plugin does `require('../config')` and reads `config.WORK_TYPE`,
+// `config.PREFIX`, `config.OWNER_NUMBER`, ... at call time (verified: no plugin
+// captures these at module load). So we can swap `module.exports` for a Proxy
+// that prefers the ACTIVE session's settings and falls back to the global
+// defaults. That makes the entire 44-plugin codebase session-aware without
+// touching a single plugin.
+const sessionContext = require('./lib/sessionContext');
+
+const baseConfig = module.exports;
+const SESSION_SCOPED_KEYS = new Set([
+  ...PERSISTED_KEYS,
+  'OWNER_NUMBER', 'OWNER_NUMBERS', 'OWNER_NAME',
+  'BOT_NAME', 'SESSION_ID', 'PAIRING_LINK',
+  'CHATBOT_PM', 'CHATBOT_GROUP'
+]);
+
+const configProxy = new Proxy(baseConfig, {
+  get(target, prop, receiver) {
+    const ctx = sessionContext.current();
+    if (ctx && ctx.settings && typeof prop === 'string' && SESSION_SCOPED_KEYS.has(prop)) {
+      const v = ctx.settings[prop];
+      if (v !== undefined) return v;
+    }
+    return Reflect.get(target, prop, receiver);
+  },
+  set(target, prop, value) {
+    const ctx = sessionContext.current();
+    if (ctx && ctx.settings && typeof prop === 'string' && PERSISTED_KEYS.includes(prop)) {
+      ctx.settings[prop] = value;
+      // Mirror to the global object too so non-session code paths (web routes,
+      // startup logs) still see a sane value.
+      target[prop] = value;
+      return true;
+    }
+    target[prop] = value;
+    return true;
+  }
+});
+
+module.exports = configProxy;
