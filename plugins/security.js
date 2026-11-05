@@ -90,7 +90,38 @@ module.exports = {
               } catch (secondErr) {
                 const again = require('../lib/viewOnceCache').get(m.quoted.id);
                 if (again) buffer = again.buffer;
-                else throw secondErr;
+                else {
+                  // Third attempt: the quoted copy had its mediaKey stripped,
+                  // but the ORIGINAL payload we received may still carry it.
+                  try {
+                    const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+                    const orig = require('../lib/messageStore').get(m.quoted.id);
+                    const origMsg = orig && (orig.msg?.message || orig.message || orig.msg);
+                    if (origMsg) {
+                      buffer = await downloadMediaMessage(
+                        {
+                          key: {
+                            remoteJid: m.chat,
+                            id: m.quoted.id,
+                            participant: m.quoted.senderLid || m.quoted.sender,
+                          },
+                          message: origMsg,
+                        },
+                        'buffer',
+                        {}
+                      );
+                      if (buffer && buffer.length) {
+                        require('../lib/viewOnceCache').put(m.quoted.id, {
+                          buffer,
+                          type: isImage ? 'image' : 'video',
+                          sender: m.quoted.sender,
+                          chat: m.chat,
+                        });
+                      }
+                    }
+                  } catch (_) { /* fall through to the original error */ }
+                  if (!buffer || !buffer.length) throw secondErr;
+                }
               }
             }
           }

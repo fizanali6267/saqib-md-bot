@@ -509,8 +509,11 @@ for (const file of allPluginFiles) {
 
 // In-memory message store for Anti-Delete AND for answering WhatsApp retry
 // requests (getMessage). Bounded so it can never leak memory on a busy bot.
-const messageStore = new Map();
-const MESSAGE_STORE_LIMIT = 5000;
+// Lives in lib/ so plugins (.vv, anti-delete) can read it without a circular
+// require of index.js.
+const messageStoreLib = require('./lib/messageStore');
+const messageStore = messageStoreLib.store;
+const MESSAGE_STORE_LIMIT = messageStoreLib.LIMIT;
 
 // Issue 1 Fix: WhatsApp retry handshake cache. Without this, a failed decrypt
 // retry loops forever and the recipient sees "Waiting for this message".
