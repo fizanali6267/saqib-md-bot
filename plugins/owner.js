@@ -22,7 +22,7 @@ function resolveTargetJid(raw) {
 
 module.exports = {
   name: 'owner',
-  commands: ['mode', 'public', 'private', 'setpp', 'setppbot', 'block', 'unblock', 'broadcast', 'bc', 'join', 'leave', 'left'],
+  commands: ['mode', 'public', 'private', 'setpp', 'setppbot', 'block', 'unblock', 'blocklist', 'broadcast', 'bc', 'join', 'leave', 'left'],
   execute: async (sock, m, { command, args, prefix }) => {
     // Owner Only Authorization check
     const isOwner = config.checkIsOwner(m, sock);
@@ -121,7 +121,18 @@ module.exports = {
       }
 
       case 'block':
-      case 'unblock': {
+      case 'unblock':
+      case 'blocklist': {
+        const blocklist = require('../lib/blocklist');
+
+        // ---- .blocklist : show everyone currently blocked -----------------
+        if (command === 'blocklist') {
+          const arr = blocklist.list();
+          if (!arr.length) return m.reply('📭 *Blocklist is empty.*');
+          const body = arr.map((n, i) => `${i + 1}. +${n}`).join('\n');
+          return m.reply(`🚫 *BLOCKED CONTACTS (${arr.length})*\n\n${body}\n\n_Use ${prefix}unblock <number> to restore access._`);
+        }
+
         const action = command === 'block' ? 'block' : 'unblock';
 
         // Build every plausible identifier for the target. WhatsApp's blocklist
@@ -155,39 +166,71 @@ module.exports = {
           );
         }
 
-        // If we have a phone number, verify it exists on WhatsApp first so the
-        // user gets a clear reason instead of a cryptic IQ error.
-        const firstPn = unique.find((j) => j.endsWith('@s.whatsapp.net'));
-        if (firstPn && typeof sock.onWhatsApp === 'function') {
-          try {
-            const [check] = await sock.onWhatsApp(firstPn.split('@')[0]);
-            if (!check || !check.exists) {
-              return m.reply(`⚠️ *${firstPn.split('@')[0]}* is not registered on WhatsApp.`);
-            }
-          } catch (_) { /* ignore — try the block anyway */ }
+        // Never allow blocking the bot itself or the owner.
+        const selfNum = String(sock?.user?.id || '').replace(/[^0-9]/g, '').slice(0, 12);
+        const ownerNums = (config.OWNER_NUMBERS || []).map((n) => String(n).replace(/[^0-9]/g, ''));
+        const isProtected = (jid) => {
+          const d = String(jid).split('@')[0].replace(/[^0-9]/g, '');
+          if (!d) return false;
+          if (selfNum && d === selfNum) return true;
+          if (ownerNums.includes(d)) return true;
+          return false;
+        };
+
+        // ---- Resolve the single best target -------------------------------
+        const pnJid = unique.find((j) => j.endsWith('@s.whatsapp.net')) || null;
+        const rawJid = unique.find((j) => !j.endsWith('@s.whatsapp.net')) || null;
+        const target = pnJid || rawJid;
+
+        if (isProtected(target)) {
+          return m.reply('🛡️ *You cannot block the bot itself or the owner.*');
         }
 
-        let lastErr = null;
-        for (const target of unique) {
+        const num = String(target).split('@')[0];
+
+        // ---- 1) Bot-level blocklist (always works, even for LID) ----------
+        let listChanged = false;
+        if (action === 'block') {
+          listChanged = blocklist.add(pnJid || target);
+          if (rawJid) blocklist.add(rawJid);
+        } else {
+          listChanged = blocklist.remove(pnJid || target);
+          if (rawJid) blocklist.remove(rawJid);
+        }
+
+        // ---- 2) Native WhatsApp block (best effort) -----------------------
+        let waOk = false;
+        let waErr = null;
+        for (const jid of unique) {
           try {
-            await sock.updateBlockStatus(target, action);
-            const num = target.split('@')[0];
-            if (action === 'block') {
-              await m.reply(`🚫 *@${num}* has been blocked from contacting the bot!`, { mentions: [target] });
-            } else {
-              await m.reply(`✅ *@${num}* has been unblocked!`, { mentions: [target] });
-            }
-            return;
+            await sock.updateBlockStatus(jid, action);
+            waOk = true;
+            break;
           } catch (e) {
-            lastErr = e;
+            waErr = e;
           }
         }
 
-        const detail = (lastErr && (lastErr.message || lastErr.output?.payload?.message)) || 'unknown error';
-        await m.reply(
-          `❌ Failed to ${action} that contact.\n*Reason:* ${detail}\n\n` +
-          `💡 *Tip:* If this is a LID contact, reply directly to one of their messages (or send their phone number) and try again.`
-        );
+        if (action === 'block') {
+          await m.reply(
+            `🚫 *@${num}* has been blocked!`,
+            { mentions: [`${num}@s.whatsapp.net`] }
+          );
+        } else {
+          await m.reply(
+            `✅ *@${num}* has been unblocked!`,
+            { mentions: [`${num}@s.whatsapp.net`] }
+          );
+        }
+
+        // Only surface a warning when BOTH paths failed.
+        if (!waOk && !listChanged) {
+          const detail = (waErr && (waErr.message || waErr.output?.payload?.message)) || 'unknown error';
+          await m.reply(
+            `⚠️ *Note:* WhatsApp-level ${action} failed (${detail}), ` +
+            `but the bot blocklist was updated.`
+          );
+        }
         break;
       }
 

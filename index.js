@@ -908,8 +908,28 @@ async function startBot() {
         continue;
       }
 
+      // Bot-level blocklist guard (.block / .unblock)
+      // Runs before every feature so a blocked contact can never trigger
+      // auto-read, chatbot, downloads or any command.
+      if (!m.fromMe && !__isOwnerEarly) {
+        try {
+          const blocklist = require('./lib/blocklist');
+          if (blocklist.isBlocked(m.sender) || (m.senderLid && blocklist.isBlocked(m.senderLid))) {
+            console.log(`\u{1F6AB} Blocked contact ignored: ${m.sender}`);
+            continue;
+          }
+        } catch (_) {}
+      }
+
       // Auto Read (Blue Tick vs Double Grey Tick)
-      if (config.AUTO_READ && m.key && !m.fromMe) {
+      // Maintenance mode: only the owner may run commands.
+      if (config.MAINTENANCE && !__isOwnerEarly && m.body && m.body.startsWith(config.PREFIX)) {
+        console.log(`\u{1F6E0}\uFE0F Maintenance mode: blocked ${m.sender}`);
+        continue;
+      }
+
+      // Incognito mode suppresses read receipts.
+      if (config.AUTO_READ && !config.INCOGNITO && m.key && !m.fromMe) {
         sock.readMessages([m.key]).catch(() => null);
       }
 

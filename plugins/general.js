@@ -225,6 +225,7 @@ module.exports = {
 │ ◦ ${prefix}private
 │ ◦ ${prefix}block
 │ ◦ ${prefix}unblock
+│ ◦ ${prefix}blocklist
 │ ◦ ${prefix}broadcast
 │ ◦ ${prefix}join
 │ ◦ ${prefix}pair
@@ -428,7 +429,9 @@ Comprehensive manual of all 120+ commands supported by ${config.BOT_NAME}:
 • *${prefix}mode public / private* - Public access or owner-only access.
 • *${prefix}public* - Shortcut to switch bot mode to public.
 • *${prefix}private* - Shortcut to switch bot mode to private.
-• *${prefix}block / unblock [@user]* - Block or unblock users.
+• *${prefix}block [@user | number]* - Blocks a contact (WhatsApp + bot-level, so they can never trigger the bot).
+• *${prefix}unblock [@user | number]* - Restores a blocked contact.
+• *${prefix}blocklist* - Shows every contact blocked by the bot.
 • *${prefix}broadcast [msg]* - Broadcasts message to all groups.
 • *${prefix}join [link]* - Joins group via invite link.
 • *${prefix}pair [number]* - Get a pairing code to link the bot on another number.

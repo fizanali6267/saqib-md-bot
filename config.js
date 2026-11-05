@@ -78,6 +78,11 @@ module.exports = {
   ANTI_CALL: parseBool(process.env.ANTI_CALL, false),
   AUTO_BIO: parseBool(process.env.AUTO_BIO, false),
 
+  // Maintenance mode: when ON, only the owner can use commands.
+  MAINTENANCE: parseBool(process.env.MAINTENANCE, false),
+  // Incognito mode: suppresses read receipts / presence where possible.
+  INCOGNITO: parseBool(process.env.INCOGNITO, false),
+
   // AI APIs — SAQIB-MD uses Google Gemini EVERYWHERE (no OpenAI needed).
   // .gpt, .ai, .gemini, .summarize, .code, chatbot — sab isi key se chalte hain.
   // Fallback: agar purani deployment par key OPENAI_API_KEY naam se padi ho
@@ -210,7 +215,8 @@ const PERSISTED_KEYS = [
   'ANTI_VIEW_ONCE', 'AUTO_VIEW_ONCE',
   'AUTO_STATUS_READ', 'AUTO_STATUS_REACT', 'STATUS_REACT_EMOJI',
   'ANTI_BADWORD', 'ANTI_CALL', 'ANTI_LINK',
-  'CHATBOT_PM', 'CHATBOT_GROUP'
+  'CHATBOT_PM', 'CHATBOT_GROUP',
+  'MAINTENANCE', 'INCOGNITO'
 ];
 
 // Bump this whenever the factory defaults change. A settings.json written by an

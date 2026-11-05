@@ -85,7 +85,7 @@ const REACTIONS = {
   nosebleed: 'nosebleed',
   peek: 'peek',
   run: 'run',
-  roll: 'roll',
+  rolling: 'roll',
   stop: 'stop',
   yes: 'yes',
   no: 'no',
