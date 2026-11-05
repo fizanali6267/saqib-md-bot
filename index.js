@@ -245,6 +245,29 @@ app.get('/ytcheck', async (req, res) => {
       };
     }
 
+    if (req.query.saavn === '1') {
+      try {
+        const saavn = require('./lib/saavn');
+        const t0 = Date.now();
+        const sr = await saavn.searchSongs(q, 3);
+        const dr = await saavn.downloadSong(q, { limit: 6 });
+        out.saavn = {
+          searchOk: sr.ok,
+          searchCount: (sr.results || []).length,
+          top: (sr.results || []).slice(0, 3).map(function (x) { return x.title + ' [' + x.quality + ']'; }),
+          downloadOk: dr.ok,
+          title: dr.title,
+          quality: dr.quality,
+          bytes: dr.ok && dr.file ? fs.statSync(dr.file).size : 0,
+          ms: Date.now() - t0,
+          error: dr.error
+        };
+        if (dr.ok) saavn.cleanupDir(dr.dir);
+      } catch (e) {
+        out.saavn = { error: e && e.message ? e.message : String(e) };
+      }
+    }
+
     if (req.query.dl === '1') {
       const t0 = Date.now();
       const r = await ytdlp.downloadAudio(q, { bitrate: '128' });
