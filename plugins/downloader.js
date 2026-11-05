@@ -15,27 +15,54 @@ module.exports = {
       case 'play': {
         if (!query) return m.reply(`\u2753 Send a song name or YouTube link!\nExample: *${prefix}song Dil Dil Pakistan*`);
         await m.react('\u23f3');
+
+        const isUrl = /^https?:\/\//i.test(query);
         let result = null;
+        let source = '';
+
         try {
-          result = await ytdlp.downloadAudio(query, { bitrate: '128' });
-          if (!result.ok) {
-            await m.react('\u274c');
-            return m.reply(`\u274c *Song download failed*\n\n${result.error}`);
+          // 1) Direct YouTube/other link -> yt-dlp straight away.
+          if (isUrl) {
+            result = await ytdlp.downloadAudio(query, { bitrate: '128' });
+            source = 'YouTube';
+          } else {
+            // 2) Free-text search -> JioSaavn first (permanent, no cookies, 320kbps).
+            const saavn = require('../lib/saavn');
+            const sres = await saavn.downloadSong(query, { limit: 8 });
+            if (sres.ok) {
+              result = sres;
+              source = 'JioSaavn';
+            } else {
+              // 3) Fallback to yt-dlp (works while cookies are valid).
+              result = await ytdlp.downloadAudio(query, { bitrate: '128' });
+              source = 'YouTube';
+            }
           }
+
+          if (!result || !result.ok) {
+            await m.react('\u274c');
+            return m.reply(`\u274c *Could not find that song.*\n\nPlease check the spelling or try another name.`);
+          }
+
           const sizeMB = (fs.statSync(result.file).size / (1024 * 1024)).toFixed(2);
+          const isM4a = /\.m4a$/i.test(result.file);
+
           await sock.sendMessage(m.chat, {
             audio: { url: result.file },
-            mimetype: 'audio/mpeg',
-            fileName: `${result.title}.mp3`,
+            mimetype: isM4a ? 'audio/mp4' : 'audio/mpeg',
+            fileName: `${result.title || 'song'}.${isM4a ? 'm4a' : 'mp3'}`,
             ptt: false
           }, { quoted: m });
+
           await m.react('\ud83c\udfb5');
-          console.log(`\ud83c\udfb5 .song served "${result.title}" (${sizeMB} MB)`);
+          console.log(`\ud83c\udfb5 .song "${result.title}" via ${source} (${sizeMB} MB)`);
         } catch (e) {
           await m.react('\u274c');
-          await m.reply('\u274c Song download error: ' + (e && e.message ? e.message : e));
+          await m.reply('\u26a0\ufe0f *Something went wrong while fetching this song.*\n\nPlease report this to the owner so it can be fixed.');
         } finally {
-          if (result && result.dir) ytdlp.cleanupDir(result.dir);
+          if (result && result.dir) {
+            try { require('../lib/saavn').cleanupDir(result.dir); } catch (_) {}
+          }
         }
         break;
       }

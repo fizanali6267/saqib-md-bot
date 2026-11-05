@@ -126,9 +126,25 @@ module.exports = {
         }
         await m.react('⏳');
         try {
-          // Spotify audio is DRM-protected, so we resolve the track name and
-          // fetch the matching audio from YouTube instead.
+          // Spotify audio is DRM-protected. Resolve the track name and pull the
+          // matching audio from JioSaavn first (permanent, no cookies), then
+          // fall back to YouTube.
           const searchTerm = query.replace(/https?:\/\/open\.spotify\.com\/\S+/i, '').trim() || query;
+          const saavn = require('../lib/saavn');
+          const sd = await saavn.downloadSong(searchTerm, { limit: 6 });
+          if (sd.ok) {
+            try {
+              await sock.sendMessage(m.chat, {
+                audio: { url: sd.file },
+                mimetype: 'audio/mp4',
+                fileName: `${sd.title}.m4a`,
+                ptt: false
+              }, { quoted: m });
+              return m.react('✅');
+            } finally {
+              saavn.cleanupDir(sd.dir);
+            }
+          }
           const r = await sendAudio(sock, m, searchTerm);
           if (r.ok) return m.react('✅');
           await m.reply(`⚠️ Could not find that track. Try *${prefix}song ${searchTerm}*.`);
