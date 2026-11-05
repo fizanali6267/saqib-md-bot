@@ -4,14 +4,14 @@ const config = require('../config');
 
 module.exports = {
   name: 'converter',
-  commands: ['sticker', 's', 'take', 'steal', 'toimg', 'tovideo', 'tomp3', 'tts', 'translate', 'tr', 'ocr'],
+  commands: ['sticker', 's', 'take', 'steal', 'toimg', 'tovideo', 'tomp3', 'say', 'ttsvoice', 'translate', 'tr', 'ocr'],
   execute: async (sock, m, { command, args, prefix }) => {
     switch (command) {
       case 'sticker':
       case 's': {
         const targetMsg = m.quoted ? m.quoted : m;
         if (!targetMsg || (!targetMsg.type?.includes('image') && !targetMsg.type?.includes('video'))) {
-          return m.reply(`❓ Kisi picture ya 5-second video ko reply karke *${prefix}s* likhein!`);
+          return m.reply(`❓ Reply to a picture or a 5-second video with *${prefix}s*.`);
         }
 
         try {
@@ -31,7 +31,7 @@ module.exports = {
       case 'take':
       case 'steal': {
         if (!m.quoted || !m.quoted.type?.includes('sticker')) {
-          return m.reply(`❓ Kisi sticker ko reply karke *${prefix}take PackName | Author* likhein!`);
+          return m.reply(`❓ Reply to a sticker with *${prefix}take PackName | Author*.`);
         }
 
         try {
@@ -52,7 +52,7 @@ module.exports = {
 
       case 'toimg': {
         if (!m.quoted || !m.quoted.type?.includes('sticker')) {
-          return m.reply(`❓ Kisi static sticker ko reply karein.`);
+          return m.reply(`❓ Reply to a static sticker.`);
         }
         try {
           await m.reply(config.MESSAGES.WAIT);
@@ -69,7 +69,7 @@ module.exports = {
 
       case 'tovideo': {
         if (!m.quoted || !m.quoted.type?.includes('sticker')) {
-          return m.reply(`❓ Kisi animated sticker ko reply karein.`);
+          return m.reply(`❓ Reply to an animated sticker.`);
         }
         try {
           await m.reply(config.MESSAGES.WAIT);
@@ -86,7 +86,7 @@ module.exports = {
 
       case 'tomp3': {
         if (!m.quoted || !m.quoted.type?.includes('video')) {
-          return m.reply(`❓ Kisi video ko reply karke *${prefix}tomp3* likhein.`);
+          return m.reply(`❓ Reply to a video with *${prefix}tomp3*.`);
         }
         try {
           await m.reply(config.MESSAGES.WAIT);
@@ -102,9 +102,10 @@ module.exports = {
         break;
       }
 
-      case 'tts': {
+      case 'say':
+      case 'ttsvoice': {
         const text = args.join(' ');
-        if (!text) return m.reply(`❓ Voice mein convert karne ke liye text likhein!\nMaslan: *${prefix}tts Assalam o Alaikum*`);
+        if (!text) return m.reply(`❓ Please provide the text to convert to voice.\nExample: *${prefix}say Hello, how are you?*`);
 
         try {
           const url = googleTTS.getAudioUrl(text, {
@@ -129,7 +130,7 @@ module.exports = {
         const text = args.slice(1).join(' ') || (m.quoted ? m.quoted.text : '');
         const targetLang = args[0] || 'ur';
 
-        if (!text) return m.reply(`❓ Usage: *${prefix}tr ur How are you?* ya message quote karein.`);
+        if (!text) return m.reply(`❓ Usage: *${prefix}tr ur How are you?* or quote a message.`);
 
         try {
           const res = await axios.get(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`);
@@ -144,7 +145,7 @@ module.exports = {
       case 'ocr': {
         const targetMsg = m.quoted ? m.quoted : m;
         if (!targetMsg || !targetMsg.type?.includes('image')) {
-          return m.reply(`❓ Kisi text wali image ko reply karke *${prefix}ocr* likhein.`);
+          return m.reply(`❓ Reply to an image containing text with *${prefix}ocr*.`);
         }
         await m.reply(`🔍 *Reading text from image...* (OCR Processing)`);
         break;

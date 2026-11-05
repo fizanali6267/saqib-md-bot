@@ -69,7 +69,7 @@ module.exports = {
             `*English Translation:*\n${english}\n\n`;
 
           if (isDefault) {
-            msg += `💡 *Tip:* Kisi bhi Surah ki Ayah dekhne ke liye type karein: *${prefix}quran [surah]:[ayah]* (e.g. *${prefix}quran 1:1*)\n\n`;
+            msg += `💡 *Tip:* To view any Surah's Ayah, type: *${prefix}quran [surah]:[ayah]* (e.g. *${prefix}quran 1:1*)\n\n`;
           }
           msg += `_Al-Quran Al-Kareem_`;
 

@@ -60,7 +60,7 @@ module.exports = {
         if (!isBotAdmin) return m.reply(config.MESSAGES.BOT_ADMIN);
 
         const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : null);
-        if (!target) return m.reply(`❓ Barahe karam kisi member ko tag karein ya message quote karein.\nMaslan: *${prefix}kick @user*`);
+        if (!target) return m.reply(`❓ Please tag a member or quote a message.\nExample: *${prefix}kick @user*`);
 
         await sock.groupParticipantsUpdate(m.chat, [target], 'remove');
         groupCache.delete(m.chat); // Invalidate cache
@@ -73,7 +73,7 @@ module.exports = {
         if (!isBotAdmin) return m.reply(config.MESSAGES.BOT_ADMIN);
 
         const num = args[0]?.replace(/[^0-9]/g, '');
-        if (!num) return m.reply(`❓ Barahe karam number enter karein.\nMaslan: *${prefix}add 923001234567*`);
+        if (!num) return m.reply(`❓ Please enter a number.\nExample: *${prefix}add 923001234567*`);
 
         const target = `${num}@s.whatsapp.net`;
         await sock.groupParticipantsUpdate(m.chat, [target], 'add');
@@ -87,7 +87,7 @@ module.exports = {
         if (!isBotAdmin) return m.reply(config.MESSAGES.BOT_ADMIN);
 
         const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : null);
-        if (!target) return m.reply(`❓ Kisi member ko tag karein.\nMaslan: *${prefix}promote @user*`);
+        if (!target) return m.reply(`❓ Tag a member.\nExample: *${prefix}promote @user*`);
 
         await sock.groupParticipantsUpdate(m.chat, [target], 'promote');
         groupCache.delete(m.chat); // Invalidate cache
@@ -100,7 +100,7 @@ module.exports = {
         if (!isBotAdmin) return m.reply(config.MESSAGES.BOT_ADMIN);
 
         const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : null);
-        if (!target) return m.reply(`❓ Kisi admin ko tag karein.\nMaslan: *${prefix}demote @user*`);
+        if (!target) return m.reply(`❓ Tag an admin.\nExample: *${prefix}demote @user*`);
 
         await sock.groupParticipantsUpdate(m.chat, [target], 'demote');
         groupCache.delete(m.chat); // Invalidate cache
@@ -158,7 +158,7 @@ module.exports = {
       case 'warn': {
         if (!isSenderAdmin) return m.reply(config.MESSAGES.ADMIN_ONLY);
         const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : null);
-        if (!target) return m.reply(`❓ Member ko tag karein jise warn karna hai.`);
+        if (!target) return m.reply(`❓ Tag the member you want to warn.`);
 
         const currentWarns = (warnDB.get(target) || 0) + 1;
         warnDB.set(target, currentWarns);
@@ -181,7 +181,7 @@ module.exports = {
       case 'resetwarn': {
         if (!isSenderAdmin) return m.reply(config.MESSAGES.ADMIN_ONLY);
         const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : null);
-        if (!target) return m.reply(`❓ Member ko tag karein jiski warnings reset karni hain.`);
+        if (!target) return m.reply(`❓ Tag the member whose warnings you want to reset.`);
         warnDB.delete(target);
         await m.reply(`✅ Warnings reset to 0 for @${target.split('@')[0]}.`, { mentions: [target] });
         break;

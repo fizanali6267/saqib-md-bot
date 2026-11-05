@@ -13,7 +13,7 @@ module.exports = {
       case 'song':
       case 'ytmp3':
       case 'play': {
-        if (!query) return m.reply(`\u2753 Song ka naam ya YouTube link bhejein!\nMaslan: *${prefix}song Dil Dil Pakistan*`);
+        if (!query) return m.reply(`\u2753 Send a song name or YouTube link!\nExample: *${prefix}song Dil Dil Pakistan*`);
         await m.react('\u23f3');
         let result = null;
         try {
@@ -42,7 +42,7 @@ module.exports = {
 
       case 'video':
       case 'ytmp4': {
-        if (!query) return m.reply(`\u2753 Video ka naam ya YouTube link bhejein!\nMaslan: *${prefix}video funny cats*`);
+        if (!query) return m.reply(`\u2753 Send a video name or YouTube link!\nExample: *${prefix}video funny cats*`);
         await m.react('\u23f3');
         let result = null;
         try {
@@ -69,7 +69,7 @@ module.exports = {
       }
 
       case 'yts': {
-        if (!query) return m.reply(`\u2753 Search keyword enter karein!\nMaslan: *${prefix}yts Ertugrul Ghazi*`);
+        if (!query) return m.reply(`\u2753 Enter a search keyword!\nExample: *${prefix}yts Ertugrul Ghazi*`);
         await m.reply(config.MESSAGES.WAIT);
         try {
           const info = await ytdlp.getInfo(query);
@@ -91,53 +91,57 @@ module.exports = {
       case 'tiktok':
       case 'tt': {
         if (!query || !query.includes('tiktok.com')) {
-          return m.reply(`❓ Durust TikTok video link enter karein!\nMaslan: *${prefix}tiktok https://vm.tiktok.com/xxxx/*`);
+          return m.reply(`\u2753 Please send a valid TikTok video link!\nExample: *${prefix}tiktok https://vm.tiktok.com/xxxx/*`);
         }
-        await m.react('⏳');
-
+        await m.react('\u23f3');
+        let result = null;
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/tiktok?apikey=gifted&url=${encodeURIComponent(query)}`)
-            .catch(() => null);
-
-          if (res && res.data && res.data.result) {
-            const videoUrl = res.data.result.video_nowm || res.data.result.video;
-            await sock.sendMessage(m.chat, {
-              video: { url: videoUrl },
-              caption: `🎵 *TikTok No-Watermark*\n⚡ *Downloaded via Saqib-MD*`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply('⚠️ Video download karne mein masla hua. Link check karein.');
+          result = await ytdlp.downloadVideo(query, { height: 720 });
+          if (!result.ok) {
+            await m.react('\u274c');
+            return m.reply('\u26a0\ufe0f Could not download that TikTok video. It may be private or region-locked.');
           }
+          await sock.sendMessage(m.chat, {
+            video: { url: result.file },
+            mimetype: 'video/mp4',
+            fileName: `${result.title}.mp4`,
+            caption: `\ud83c\udfb5 *TikTok No-Watermark*\n\u26a1 _Downloaded via Saqib-MD_`
+          }, { quoted: m });
+          await m.react('\u2705');
         } catch (e) {
-          await m.reply('❌ TikTok download failed: ' + e.message);
+          await m.react('\u274c');
+          await m.reply('\u26a0\ufe0f Could not download that TikTok video right now. Please try again later.');
+        } finally {
+          if (result && result.dir) ytdlp.cleanupDir(result.dir);
         }
         break;
       }
 
       case 'fb':
       case 'facebook': {
-        if (!query || !query.includes('facebook.com') && !query.includes('fb.watch')) {
-          return m.reply(`❓ Durust Facebook video link enter karein!\nMaslan: *${prefix}fb https://fb.watch/xxxx/*`);
+        if (!query || (!query.includes('facebook.com') && !query.includes('fb.watch'))) {
+          return m.reply(`\u2753 Please send a valid Facebook video link!\nExample: *${prefix}fb https://fb.watch/xxxx/*`);
         }
-        await m.react('⏳');
-
+        await m.react('\u23f3');
+        let result = null;
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/facebook?apikey=gifted&url=${encodeURIComponent(query)}`)
-            .catch(() => null);
-
-          if (res && res.data && res.data.result) {
-            const videoUrl = res.data.result.hd || res.data.result.sd;
-            await sock.sendMessage(m.chat, {
-              video: { url: videoUrl },
-              caption: `📽️ *Facebook Video HD*\n⚡ *Downloaded via Saqib-MD*`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply('⚠️ Facebook video download nahi ho saki.');
+          result = await ytdlp.downloadVideo(query, { height: 720 });
+          if (!result.ok) {
+            await m.react('\u274c');
+            return m.reply('\u26a0\ufe0f Could not download that Facebook video. It may be private or unsupported.');
           }
+          await sock.sendMessage(m.chat, {
+            video: { url: result.file },
+            mimetype: 'video/mp4',
+            fileName: `${result.title}.mp4`,
+            caption: `\ud83d\udcfd\ufe0f *Facebook Video HD*\n\u26a1 _Downloaded via Saqib-MD_`
+          }, { quoted: m });
+          await m.react('\u2705');
         } catch (e) {
-          await m.reply('❌ Facebook download failed: ' + e.message);
+          await m.react('\u274c');
+          await m.reply('\u26a0\ufe0f Could not download that Facebook video right now. Please try again later.');
+        } finally {
+          if (result && result.dir) ytdlp.cleanupDir(result.dir);
         }
         break;
       }
@@ -145,59 +149,43 @@ module.exports = {
       case 'ig':
       case 'insta': {
         if (!query || !query.includes('instagram.com')) {
-          return m.reply(`❓ Durust Instagram reel/post link enter karein!\nMaslan: *${prefix}ig https://www.instagram.com/reel/xxxx/*`);
+          return m.reply(`\u2753 Please send a valid Instagram reel/post link!\nExample: *${prefix}ig https://www.instagram.com/reel/xxxx/*`);
         }
-        await m.react('⏳');
-
+        await m.react('\u23f3');
+        let result = null;
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/instagram?apikey=gifted&url=${encodeURIComponent(query)}`)
-            .catch(() => null);
-
-          if (res && res.data && res.data.result) {
-            const mediaUrl = res.data.result[0]?.url || res.data.result.url;
-            await sock.sendMessage(m.chat, {
-              video: { url: mediaUrl },
-              caption: `📸 *Instagram Reel/Post*\n⚡ *Downloaded via Saqib-MD*`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply('⚠️ Instagram media download nahi ho saki.');
+          result = await ytdlp.downloadVideo(query, { height: 720 });
+          if (!result.ok) {
+            await m.react('\u274c');
+            return m.reply('\u26a0\ufe0f Could not download that Instagram media. It may be private or login-locked.');
           }
+          await sock.sendMessage(m.chat, {
+            video: { url: result.file },
+            mimetype: 'video/mp4',
+            fileName: `${result.title}.mp4`,
+            caption: `\ud83d\udcf8 *Instagram Reel/Post*\n\u26a1 _Downloaded via Saqib-MD_`
+          }, { quoted: m });
+          await m.react('\u2705');
         } catch (e) {
-          await m.reply('❌ Instagram download failed: ' + e.message);
+          await m.react('\u274c');
+          await m.reply('\u26a0\ufe0f Could not download that Instagram media right now. Please try again later.');
+        } finally {
+          if (result && result.dir) ytdlp.cleanupDir(result.dir);
         }
         break;
       }
 
       case 'apk': {
-        if (!query) return m.reply(`❓ Kisi application ka naam likhein!\nMaslan: *${prefix}apk WhatsApp*`);
-        await m.react('⏳');
-
-        try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/apk?apikey=gifted&app=${encodeURIComponent(query)}`)
-            .catch(() => null);
-
-          if (res && res.data && res.data.result) {
-            const app = res.data.result;
-            await sock.sendMessage(m.chat, {
-              document: { url: app.dllink },
-              mimetype: 'application/vnd.android.package-archive',
-              fileName: `${app.name || query}.apk`,
-              caption: `📱 *App Name:* ${app.name}\n📦 *Size:* ${app.size}\n⚡ *Powered by Saqib-MD*`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply(`📱 APK search for *${query}* completed.`);
-          }
-        } catch (e) {
-          await m.reply('❌ APK fetch failed: ' + e.message);
-        }
+        if (!query) return m.reply(`\u2753 Please provide an app name!\nExample: *${prefix}apk WhatsApp*`);
+        await m.react('\u23f3');
+        await m.reply(`\ud83d\udcf1 *APK search:* Please download *${query}* from a trusted source such as APKMirror or the official Play Store. Direct APK mirroring is disabled for safety.`);
+        await m.react('\u2139\ufe0f');
         break;
       }
 
       case 'mediafire': {
         if (!query || !query.includes('mediafire.com')) {
-          return m.reply(`❓ MediaFire file link provide karein!\nMaslan: *${prefix}mediafire https://www.mediafire.com/file/...*`);
+          return m.reply(`❓ Provide a MediaFire file link!\nExample: *${prefix}mediafire https://www.mediafire.com/file/...*`);
         }
         await m.reply(config.MESSAGES.WAIT);
         await m.reply(`📁 *MediaFire Downloader:* Fetching file stream...`);

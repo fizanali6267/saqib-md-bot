@@ -13,7 +13,7 @@ module.exports = {
       case 'gpt':
       case 'gemini': {
         const prompt = query || (m.quoted ? m.quoted.text : '');
-        if (!prompt) return m.reply(`❓ Sawal likhein!\nMaslan: *${prefix}ai Pakistan ka sab se bara shehar konsa hai?*`);
+        if (!prompt) return m.reply(`❓ Please type your question!\nExample: *${prefix}ai What is the largest city in Pakistan?*`);
 
         await m.reply(config.MESSAGES.WAIT);
 
@@ -35,13 +35,13 @@ module.exports = {
           if (res && res.data && res.data.result) {
             await m.reply(`🤖 *Saqib-MD AI:*\n\n${res.data.result}`);
           } else if (!isKeyConfigured()) {
-            await m.reply('⚠️ *AI key set nahi hai.*\nBot owner ko chahiye *GEMINI_API_KEY* environment variable set karein.\nFree key: https://aistudio.google.com/apikey');
+            await m.reply('⚠️ *AI key is not set.*\nThe bot owner needs to set the *GEMINI_API_KEY* environment variable.\nFree key: https://aistudio.google.com/apikey');
           } else {
-            await m.reply('❌ AI ne is waqt jawab nahi diya. Thori dair baad dobara koshish karein.');
+            await m.reply('❌ The AI did not respond right now. Please try again in a moment.');
           }
         } catch (e) {
           if (e?.message === 'GEMINI_KEY_INVALID') {
-            return await m.reply('🔑 *GEMINI_API_KEY invalid hai.*\nOwner: https://aistudio.google.com/apikey se nayi key banayein aur environment mein update karein.');
+            return await m.reply('🔑 *GEMINI_API_KEY is invalid.*\nOwner: create a new key at https://aistudio.google.com/apikey and update the environment variable.');
           }
           await m.reply('❌ AI response error: ' + (e.response?.data?.error?.message || e.message));
         }
@@ -49,7 +49,7 @@ module.exports = {
       }
 
       case 'imagine': {
-        if (!query) return m.reply(`❓ Tasveer banane ke liye description likhein!\nMaslan: *${prefix}imagine futuristic city in Pakistan with neon lights*`);
+        if (!query) return m.reply(`❓ Write a description to generate an image!\nExample: *${prefix}imagine futuristic city in Pakistan with neon lights*`);
         await m.reply(config.MESSAGES.WAIT);
 
         try {
@@ -101,19 +101,19 @@ module.exports = {
             `🌬️ *Wind:* ${current.windspeedKmph} km/h\n` +
             `☁️ *Condition:* ${current.weatherDesc[0].value}`);
         } catch (e) {
-          await m.reply(`❌ "${city}" ka weather data nahi mila. City spelling check karein.`);
+          await m.reply(`❌ "${city}"  weather data was not found. Please check the city spelling.`);
         }
         break;
       }
 
       case 'google': {
-        if (!query) return m.reply(`❓ Search query enter karein!\nMaslan: *${prefix}google ICC Champions Trophy*`);
+        if (!query) return m.reply(`❓ Enter a search query!\nExample: *${prefix}google ICC Champions Trophy*`);
         await m.reply(`🔍 *Google Search for:* "${query}"\nhttps://www.google.com/search?q=${encodeURIComponent(query)}`);
         break;
       }
 
       case 'calc': {
-        if (!query) return m.reply(`❓ Hisab karne ke liye formula likhein!\nMaslan: *${prefix}calc 500 * 12 + 250*`);
+        if (!query) return m.reply(`❓ Write the formula to calculate!\nExample: *${prefix}calc 500 * 12 + 250*`);
         try {
           const sanitized = query.replace(/[^0-9+\-*/(). ]/g, '');
           const result = Function(`'use strict'; return (${sanitized})`)();
@@ -125,7 +125,7 @@ module.exports = {
       }
 
       case 'shorturl': {
-        if (!query || !query.startsWith('http')) return m.reply(`❓ Valid web URL enter karein!\nMaslan: *${prefix}shorturl https://example.com/long-page*`);
+        if (!query || !query.startsWith('http')) return m.reply(`❓ Enter a valid web URL!\nExample: *${prefix}shorturl https://example.com/long-page*`);
         try {
           const res = await axios.get(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(query)}`);
           await m.reply(`🔗 *Shortened URL:*\n${res.data}`);
@@ -136,14 +136,14 @@ module.exports = {
       }
 
       case 'define': {
-        if (!query) return m.reply(`❓ Lafz likhein jiska matlab jan-na hai!\nMaslan: *${prefix}define algorithm*`);
+        if (!query) return m.reply(`❓ Enter the word whose meaning you want to know!\nExample: *${prefix}define algorithm*`);
         try {
           const res = await axios.get(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(query)}`);
           const data = res.data[0];
           const definition = data.meanings[0].definitions[0].definition;
           await m.reply(`📖 *Word:* ${data.word}\n\n📚 *Definition:*\n${definition}`);
         } catch (e) {
-          await m.reply(`❌ "${query}" ki dictionary definition nahi mila.`);
+          await m.reply(`❌ "${query}"  dictionary definition was not found.`);
         }
         break;
       }

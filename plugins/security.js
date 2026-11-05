@@ -41,7 +41,7 @@ module.exports = {
           await m.reply('❌ Failed to download ViewOnce media: ' + e.message);
         }
       } else {
-        await m.reply(`💡 Kisi *View-Once* image ya video ko reply karke *${prefix}${command}* likhein.\n• *${prefix}vv* (Current Chat mein recover kare)\n• *${prefix}vv2* (Secretly aapke personal Inbox mein bhej de)`);
+        await m.reply(`💡 Reply to a *View-Once* image or video with *${prefix}${command}*.\n• *${prefix}vv* (Recover it in the current chat)\n• *${prefix}vv2* (Send it secretly to your personal inbox)`);
       }
       return;
     }
@@ -59,13 +59,13 @@ module.exports = {
         if (sub === 'on') {
           config.ANTI_VIEW_ONCE = true;
           config.AUTO_VIEW_ONCE = true;
-          await m.reply(`🔓 *AUTO ANTI-VIEW-ONCE ACTIVATED!*\nAb jab bhi koi group ya DM mein View-Once photo ya video bhejega, Saqib-MD usay foran download karke chupkay se aapke *Personal Inbox (DM)* mein bhej dega!`);
+          await m.reply(`🔓 *AUTO ANTI-VIEW-ONCE ACTIVATED!*\nFrom now on, whenever someone sends a View-Once photo or video in a group or DM, Saqib-MD will instantly download it and secretly send it to your *personal inbox (DM)*!`);
         } else if (sub === 'off') {
           config.ANTI_VIEW_ONCE = false;
           config.AUTO_VIEW_ONCE = false;
           await m.reply(`🔓 *Auto Anti-View-Once DISABLED.*`);
         } else {
-          await m.reply(`Current Status: *${(config.ANTI_VIEW_ONCE || config.AUTO_VIEW_ONCE) ? 'ENABLED (Auto Inbox) ✅' : 'DISABLED ❌'}*\nUsage: *${prefix}autovv on* ya *${prefix}autovv off*`);
+          await m.reply(`Current Status: *${(config.ANTI_VIEW_ONCE || config.AUTO_VIEW_ONCE) ? 'ENABLED (Auto Inbox) ✅' : 'DISABLED ❌'}*\nUsage: *${prefix}autovv on* or *${prefix}autovv off*`);
         }
         break;
       }
@@ -74,13 +74,13 @@ module.exports = {
         if (sub === 'on') {
           config.ALWAYS_ONLINE = true;
           await sock.sendPresenceUpdate('available');
-          await m.reply(`🟢 *ALWAYS ONLINE ACTIVATED!*\nAapka WhatsApp 24/7 sab ko Online show hoga, chahe aap offline hon ya so rahe hon.`);
+          await m.reply(`🟢 *ALWAYS ONLINE ACTIVATED!*\nYour WhatsApp will appear Online 24/7 to everyone, even when you are offline or asleep.`);
         } else if (sub === 'off') {
           config.ALWAYS_ONLINE = false;
           await sock.sendPresenceUpdate('unavailable');
           await m.reply(`⚪ *Always Online DEACTIVATED.* Normal presence restored.`);
         } else {
-          await m.reply(`Current Status: *${config.ALWAYS_ONLINE ? 'ALWAYS ONLINE 🟢' : 'NORMAL ⚪'}*\nUsage: *${prefix}alwaysonline on* ya *${prefix}alwaysonline off*`);
+          await m.reply(`Current Status: *${config.ALWAYS_ONLINE ? 'ALWAYS ONLINE 🟢' : 'NORMAL ⚪'}*\nUsage: *${prefix}alwaysonline on* or *${prefix}alwaysonline off*`);
         }
         break;
       }
@@ -89,12 +89,12 @@ module.exports = {
       case 'bluetick': {
         if (sub === 'on') {
           config.AUTO_READ = true;
-          await m.reply(`🔵 *AUTO READ / BLUE TICK ACTIVATED!*\nHar aane wale message par foran Blue Tick lag jayega.`);
+          await m.reply(`🔵 *AUTO READ / BLUE TICK ACTIVATED!*\nEvery incoming message will be marked as read (blue tick) instantly.`);
         } else if (sub === 'off') {
           config.AUTO_READ = false;
-          await m.reply(`⚪ *DOUBLE GREY TICK MODE ACTIVATED!*\nMessages par foran Blue Tick nahi lagega (sirf double grey tick rahega jab tak aap khud na dekhein).`);
+          await m.reply(`⚪ *DOUBLE GREY TICK MODE ACTIVATED!*\nMessages will not be auto-read (they will stay on double grey tick until you open them yourself).`);
         } else {
-          await m.reply(`Current Status: *${config.AUTO_READ ? 'BLUE TICK (Auto Read) 🔵' : 'DOUBLE GREY TICK (No Read) ⚪'}*\nUsage: *${prefix}bluetick on* ya *${prefix}bluetick off*`);
+          await m.reply(`Current Status: *${config.AUTO_READ ? 'BLUE TICK (Auto Read) 🔵' : 'DOUBLE GREY TICK (No Read) ⚪'}*\nUsage: *${prefix}bluetick on* or *${prefix}bluetick off*`);
         }
         break;
       }
@@ -103,11 +103,11 @@ module.exports = {
         if (sub === 'same' || sub === 'chat') {
           config.ANTI_DELETE = true;
           config.ANTI_DELETE_MODE = 'same';
-          await m.reply(`🛡️ *ANTI-DELETE: SAME CHAT MODE ACTIVATED!*\n\nMessage wahi par foran recover hoga.`);
+          await m.reply(`🛡️ *ANTI-DELETE: SAME CHAT MODE ACTIVATED!*\n\nDeleted messages will be recovered instantly in the same chat.`);
         } else if (sub === 'inbox' || sub === 'pm') {
           config.ANTI_DELETE = true;
           config.ANTI_DELETE_MODE = 'inbox';
-          await m.reply(`🛡️ *ANTI-DELETE: INBOX MODE ACTIVATED!*\n\nDeleted messages chupkay se aapki private chat (DM) mein aayenge.`);
+          await m.reply(`🛡️ *ANTI-DELETE: INBOX MODE ACTIVATED!*\n\nDeleted messages will be sent secretly to your private chat (DM).`);
         } else if (sub === 'off') {
           config.ANTI_DELETE = false;
           await m.reply(`🛡️ *Anti-Delete has been TURNED OFF.*`);

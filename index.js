@@ -290,6 +290,9 @@ const botSentMessageIds = new Set();
 // ---- Connection manager guards (prevents duplicate sockets sharing one session) ----
 let isStarting = false;          // true while a socket is being created
 let reconnectTimer = null;       // pending auto-reconnect timer
+let reconnectAttempts = 0;       // exponential backoff counter
+let lastOpenAt = 0;              // timestamp of last successful connection
+let watchdogTimer = null;        // 24/7 connection health watchdog
 let suppressReconnectUntil = 0;  // ignore close events until this timestamp (manual reload)
 
 // ---- Single-instance lock -------------------------------------------------
@@ -338,6 +341,33 @@ const acquireInstanceLock = () => {
   }
 };
 acquireInstanceLock();
+
+// ---- 24/7 Connection Watchdog -------------------------------------------
+// Baileys can occasionally go silent (half-open socket) without firing a
+// 'close' event. This watchdog checks the underlying WebSocket every 90s and
+// forces a clean restart if the socket is dead or has been offline too long.
+function startWatchdog() {
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  watchdogTimer = setInterval(() => {
+    try {
+      if (Date.now() < suppressReconnectUntil) return; // manual reload in progress
+      if (reconnectTimer) return;                      // reconnect already pending
+      const ws = currentSock && currentSock.ws;
+      const state = ws && typeof ws.readyState === 'number' ? ws.readyState : -1;
+      const offlineFor = lastOpenAt ? Date.now() - lastOpenAt : 0;
+      // readyState 1 = OPEN. Anything else means the link is down.
+      if (state !== 1 && offlineFor > 120000) {
+        console.log('\u{1F6DF} Watchdog: socket is down, forcing restart...');
+        try { currentSock && currentSock.end(undefined); } catch (_) {}
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        startBot().catch((err) => console.error('Watchdog restart error:', err));
+      }
+    } catch (e) {
+      console.error('Watchdog error:', e && e.message);
+    }
+  }, 90000);
+  if (watchdogTimer.unref) watchdogTimer.unref();
+}
 
 async function startBot() {
   // Guard: never build two sockets at the same time.
@@ -481,7 +511,10 @@ async function startBot() {
           sender: sock.user?.id || 'me',
           chat: jid,
           msg: sent,
-          time: Date.now()
+          time: Date.now(),
+          pushName: config.BOT_NAME,
+          type: 'conversation',
+          body: ''
         });
       }
     } catch (_) {}
@@ -512,15 +545,24 @@ async function startBot() {
 
       if (shouldReconnect) {
         if (reconnectTimer) return; // already scheduled — do not stack reconnects
+        // Exponential backoff with jitter so a flaky network cannot hammer
+        // WhatsApp and get the device logged out. Caps at 60s.
+        const base = Math.min(60000, 3000 * Math.pow(2, Math.min(reconnectAttempts, 5)));
+        const delay = base + Math.floor(Math.random() * 2000);
+        reconnectAttempts += 1;
+        console.log(`♻️ Reconnect attempt #${reconnectAttempts} in ${delay}ms`);
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
           startBot().catch(err => console.error('Bot launch error:', err));
-        }, 3000);
+        }, delay);
       } else {
         console.log('❌ Device logged out. Please link your phone again.');
       }
     } else if (connection === 'open') {
       console.log(`✨ ${config.BOT_NAME} connected and ready to serve!`);
+      reconnectAttempts = 0;
+      lastOpenAt = Date.now();
+      startWatchdog();
 
       // Remember our own LID <-> phone pair (needed for self-chat replies).
       try {
@@ -620,7 +662,10 @@ async function startBot() {
           sender: m.sender,
           chat: m.chat,
           msg: rawMsg,
-          time: Date.now()
+          time: Date.now(),
+          pushName: m.pushName,
+          type: m.type,
+          body: m.body
         });
       }
 
@@ -808,8 +853,31 @@ async function startBot() {
           plugin.execute(sock, m, { command, args, prefix: config.PREFIX })
             .then(() => { try { config.persistSettings?.(); } catch (_) {} })
             .catch(async (err) => {
+              // Never leak internal errors (stack traces, API keys, URLs) to
+              // the chat. Log it, tell the user to report it, and DM the owner
+              // the technical detail so it can actually be fixed.
               console.error(`Error in command ${command}:`, err);
-              try { await m.reply(config.MESSAGES.ERROR + `\n_${err.message}_`); } catch (_) {}
+
+              try {
+                await m.reply(
+                  `⚠️ *Something went wrong while running this command.*\n\n` +
+                  `Please report this to the owner so it can be fixed.`
+                );
+              } catch (_) {}
+
+              try {
+                const ownerJid = config.getOwnerJid(sock);
+                if (ownerJid) {
+                  const detail =
+                    `🛠️ *COMMAND ERROR REPORT*\n\n` +
+                    `📌 *Command:* ${config.PREFIX}${command}\n` +
+                    `👤 *From:* ${m.sender}\n` +
+                    `💬 *Chat:* ${m.chat}\n` +
+                    `🕐 *Time:* ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Karachi' })}\n` +
+                    `❗ *Error:* ${String(err && err.message ? err.message : err).slice(0, 300)}`;
+                  await sock.sendMessage(ownerJid, { text: detail });
+                }
+              } catch (_) {}
             });
           break;
         }
@@ -828,39 +896,86 @@ async function startBot() {
 
         if (cached) {
           const isGroup = cached.chat.endsWith('@g.us');
-          const senderNum = cached.sender.split('@')[0].split(':')[0];
+          const mention = require('./lib/mention');
+
+          // Resolve BOTH parties to real phone numbers. Falling back to the
+          // push name keeps the report readable when a LID cannot be mapped.
+          const senderJid = cached.sender;
           const deleterJid = update.key.participant || cached.sender;
-          const deleterNum = deleterJid.split('@')[0].split(':')[0];
+
+          const senderLabel = mention.displayName(senderJid, cached.pushName);
+          const deleterLabel = mention.displayName(deleterJid, cached.deleterName);
 
           const ownerJid = config.getOwnerJid(sock);
-          const targetChat = (config.ANTI_DELETE_MODE === 'inbox' && ownerJid) 
-            ? ownerJid 
+          const targetChat = (config.ANTI_DELETE_MODE === 'inbox' && ownerJid)
+            ? ownerJid
             : cached.chat;
 
-          const dateSent = new Date(cached.time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-          const timeSent = new Date(cached.time).toLocaleTimeString();
-          const timeDeleted = new Date().toLocaleTimeString();
+          const sentAt = new Date(cached.time || Date.now());
+          const deletedAt = new Date();
 
-          const mentions = [cached.sender];
-          if (deleterJid && !mentions.includes(deleterJid)) mentions.push(deleterJid);
+          const fmtDate = (d) => d.toLocaleDateString('en-GB', {
+            day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Karachi'
+          });
+          const fmtTime = (d) => d.toLocaleTimeString('en-GB', {
+            hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Karachi'
+          });
 
-          const alertText = `🚨 *──「 ANTI-DELETE DETECTED 」──* 🚨\n\n` +
-            `👤 *Sent by:* @${senderNum}\n` +
-            `🗑️ *Deleted by:* @${deleterNum}\n` +
-            `💬 *Chat:* ${isGroup ? 'Group Chat' : 'Private DM'}\n` +
-            `📅 *Date:* ${dateSent}\n` +
-            `🕒 *Sent at:* ${timeSent}\n` +
-            `⏱️ *Deleted at:* ${timeDeleted}\n\n` +
-            `_Original message recovered below:_ 👇`;
+          const elapsedSec = Math.max(0, Math.round((deletedAt - sentAt) / 1000));
+          const elapsed = elapsedSec < 60
+            ? `${elapsedSec} seconds`
+            : `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`;
+
+          // Describe what kind of message was deleted.
+          const typeMap = {
+            conversation: 'Text', extendedTextMessage: 'Text',
+            imageMessage: 'Image', videoMessage: 'Video',
+            audioMessage: 'Audio / Voice note', stickerMessage: 'Sticker',
+            documentMessage: 'Document', contactMessage: 'Contact',
+            locationMessage: 'Location', reactionMessage: 'Reaction',
+            pollCreationMessage: 'Poll'
+          };
+          const msgType = typeMap[cached.type] || (cached.type || 'Message');
+
+          let chatName = isGroup ? 'Group Chat' : 'Private Chat';
+          if (isGroup) {
+            try {
+              const meta = await sock.groupMetadata(cached.chat);
+              if (meta && meta.subject) chatName = `Group: ${meta.subject}`;
+            } catch (_) {}
+          }
+
+          const preview = String(cached.body || '').trim();
+          const previewLine = preview
+            ? `\n📝 *Content:* ${preview.length > 300 ? preview.slice(0, 300) + '…' : preview}`
+            : '';
+
+          const mentions = mention.mentionsFor(senderJid, deleterJid);
+
+          const alertText =
+            `🚨 *──「 ANTI-DELETE DETECTED 」──* 🚨\n\n` +
+            `👤 *Sent by:* ${senderLabel}\n` +
+            `🗑️ *Deleted by:* ${deleterLabel}\n` +
+            `💬 *Chat:* ${chatName}\n` +
+            `📎 *Message type:* ${msgType}\n` +
+            `📅 *Sent date:* ${fmtDate(sentAt)}\n` +
+            `🕐 *Sent at:* ${fmtTime(sentAt)}\n` +
+            `🕐 *Deleted at:* ${fmtTime(deletedAt)}\n` +
+            `⏱️ *Time before deletion:* ${elapsed}` +
+            `${previewLine}\n\n` +
+            `_Original message recovered below_ 👇`;
 
           await sock.sendMessage(targetChat, { text: alertText, mentions });
-          if (cached.msg.message) {
-            await sock.sendMessage(targetChat, { forward: cached.msg }, { quoted: cached.msg });
+          if (cached.msg && cached.msg.message) {
+            try {
+              await sock.sendMessage(targetChat, { forward: cached.msg }, { quoted: cached.msg });
+            } catch (_) {}
           }
         }
       }
     }
   });
+
 
   return sock;
 }

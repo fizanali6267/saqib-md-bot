@@ -193,6 +193,8 @@ module.exports = {
 │ ◦ ${prefix}video
 │ ◦ ${prefix}yts
 │ ◦ ${prefix}tiktok
+│ ◦ ${prefix}tts
+│ ◦ ${prefix}ttdl
 │ ◦ ${prefix}fb
 │ ◦ ${prefix}ig
 │ ◦ ${prefix}apk
@@ -205,7 +207,7 @@ module.exports = {
 │ ◦ ${prefix}toimg
 │ ◦ ${prefix}tovideo
 │ ◦ ${prefix}tomp3
-│ ◦ ${prefix}tts
+│ ◦ ${prefix}say
 │ ◦ ${prefix}translate
 │ ◦ ${prefix}ocr
 └───────────────
@@ -218,6 +220,7 @@ module.exports = {
 │ ◦ ${prefix}unblock
 │ ◦ ${prefix}broadcast
 │ ◦ ${prefix}join
+│ ◦ ${prefix}pair
 └───────────────
 
 💡 *For full syntax and descriptions of all 115+ commands:*
@@ -393,6 +396,8 @@ Comprehensive manual of all 115+ commands supported by ${config.BOT_NAME}:
 • *${prefix}video [query]* - High definition YouTube video downloader.
 • *${prefix}yts [query]* - Searches YouTube with durations and links.
 • *${prefix}tiktok [link]* - No-watermark HD TikTok video downloader.
+• *${prefix}tts [query]* - TikTok search results (Pakistan region).
+• *${prefix}ttdl [link]* - No-watermark TikTok video downloader.
 • *${prefix}fb [link]* - High definition Facebook video downloader.
 • *${prefix}ig [link]* - Instagram post, reels, and video downloader.
 • *${prefix}apk [app]* - Official Android APK installer downloader.
@@ -406,7 +411,7 @@ Comprehensive manual of all 115+ commands supported by ${config.BOT_NAME}:
 • *${prefix}toimg* - Converts sticker back to photo.
 • *${prefix}tovideo* - Converts animated sticker to video.
 • *${prefix}tomp3* - Extracts audio track to MP3.
-• *${prefix}tts [lang] [text]* - Text-to-speech audio converter.
+• *${prefix}say [text]* - Text-to-speech audio converter.
 • *${prefix}translate [lang] [text]* - Multi-language translation.
 • *${prefix}ocr* - Extracts text from quoted images.
 
@@ -419,6 +424,7 @@ Comprehensive manual of all 115+ commands supported by ${config.BOT_NAME}:
 • *${prefix}block / unblock [@user]* - Block or unblock users.
 • *${prefix}broadcast [msg]* - Broadcasts message to all groups.
 • *${prefix}join [link]* - Joins group via invite link.
+• *${prefix}pair [number]* - Get a pairing code to link the bot on another number.
 
 ━━━━━━━━━━━━━━━━━━━━━
 🚀 *Deploy your own free bot here:*
@@ -432,12 +438,13 @@ _⚡ Developed exclusively for Saqib Iqbal | Ultra-Fast Architecture_`;
 
       case 'ping':
       case 'speed': {
+        // Measure a real round-trip to WhatsApp instead of a fake 0ms number.
         const start = Date.now();
-        // Issue 6 Fix: fire-and-forget reaction. Awaiting m.react() added the
-        // whole WhatsApp round-trip to the measured latency and made .ping feel
-        // slow even on a healthy connection.
-        m.react('⚡').catch(() => null);
+        try {
+          await sock.sendPresenceUpdate('available', m.chat);
+        } catch (_) {}
         const latency = Date.now() - start;
+        m.react('⚡').catch(() => null);
         await m.reply(`🚀 *Pong:* \`${latency}ms\`\n⚡ *Status:* Online & Lightning Fast\n\n👑 *Developer:* ${config.OWNER_NAME}\n🤖 *Engine:* ${config.BOT_NAME} High-Speed Core`);
         break;
       }

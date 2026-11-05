@@ -1,5 +1,49 @@
-const axios = require('axios');
+const fs = require('fs');
 const config = require('../config');
+const ytdlp = require('../lib/ytdlp');
+
+/**
+ * Social downloaders backed by yt-dlp.
+ * The old public "giftedtech" API is dead, so every command here now uses the
+ * same resilient yt-dlp ladder the YouTube commands use. If a platform is not
+ * supported by yt-dlp we degrade gracefully with a helpful message instead of
+ * throwing an error.
+ */
+
+function looksLike(url, ...hosts) {
+  return typeof url === 'string' && hosts.some((h) => url.includes(h));
+}
+
+async function sendVideo(sock, m, url) {
+  const res = await ytdlp.downloadVideo(url, { height: 720 });
+  if (!res.ok) return { ok: false, error: res.error };
+  try {
+    await sock.sendMessage(m.chat, {
+      video: fs.readFileSync(res.file),
+      caption: '✅ *Download complete*',
+      mimetype: 'video/mp4'
+    }, { quoted: m });
+    return { ok: true };
+  } finally {
+    ytdlp.cleanupDir(res.dir);
+  }
+}
+
+async function sendAudio(sock, m, url) {
+  const res = await ytdlp.downloadAudio(url, { bitrate: '128' });
+  if (!res.ok) return { ok: false, error: res.error };
+  try {
+    await sock.sendMessage(m.chat, {
+      audio: fs.readFileSync(res.file),
+      mimetype: 'audio/mp4',
+      ptt: false,
+      fileName: (res.title || 'audio') + '.mp3'
+    }, { quoted: m });
+    return { ok: true };
+  } finally {
+    ytdlp.cleanupDir(res.dir);
+  }
+}
 
 module.exports = {
   name: 'social_downloaders',
@@ -12,130 +56,84 @@ module.exports = {
       case 'tw':
       case 'x':
       case 'xdl': {
-        if (!url || (!url.includes('twitter.com') && !url.includes('x.com'))) {
+        if (!looksLike(url, 'twitter.com', 'x.com')) {
           return m.reply(`❓ Provide a valid Twitter/X video link!\nExample: *${prefix}twitter https://x.com/.../status/...*`);
         }
         await m.react('⏳');
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/twitter?apikey=gifted&url=${encodeURIComponent(url)}`).catch(() => null);
-          const videoUrl = res?.data?.result?.video || res?.data?.result?.hd || res?.data?.result?.url;
-
-          if (videoUrl) {
-            await sock.sendMessage(m.chat, {
-              video: { url: videoUrl },
-              caption: `🐦 *Twitter/X Video Downloaded*\n⚡ *Powered by Saqib-MD*`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply('⚠️ Failed to extract Twitter video. Please verify link.');
-          }
+          const r = await sendVideo(sock, m, url);
+          if (r.ok) return m.react('✅');
+          await m.reply('⚠️ Could not download that Twitter/X video. It may be private or unsupported.');
         } catch (e) {
-          await m.reply('❌ Twitter download error: ' + e.message);
+          await m.reply('⚠️ Could not download that Twitter/X video right now. Please try again later.');
         }
         break;
       }
 
       case 'threads':
       case 'threadsdl': {
-        if (!url || !url.includes('threads.net')) {
-          return m.reply(`❓ Provide a valid Threads post link!\nExample: *${prefix}threads https://www.threads.net/...*`);
+        if (!looksLike(url, 'threads.net', 'threads.com')) {
+          return m.reply(`❓ Provide a valid Threads link!\nExample: *${prefix}threads https://www.threads.net/...*`);
         }
         await m.react('⏳');
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/threads?apikey=gifted&url=${encodeURIComponent(url)}`).catch(() => null);
-          const media = res?.data?.result?.video || res?.data?.result?.image;
-          if (media) {
-            const isVid = res?.data?.result?.video;
-            await sock.sendMessage(m.chat, {
-              [isVid ? 'video' : 'image']: { url: media },
-              caption: `🧵 *Threads Media Downloaded*\n⚡ *Powered by Saqib-MD*`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply('⚠️ Failed to extract Threads media.');
-          }
+          const r = await sendVideo(sock, m, url);
+          if (r.ok) return m.react('✅');
+          await m.reply('⚠️ Could not download that Threads video. It may be private or unsupported.');
         } catch (e) {
-          await m.reply('❌ Threads error: ' + e.message);
+          await m.reply('⚠️ Could not download that Threads video right now. Please try again later.');
         }
         break;
       }
 
       case 'pinterestdl':
       case 'pindl': {
-        if (!url || !url.includes('pinterest.com') && !url.includes('pin.it')) {
-          return m.reply(`❓ Provide a valid Pinterest pin link!\nExample: *${prefix}pindl https://pin.it/...*`);
+        if (!looksLike(url, 'pinterest.')) {
+          return m.reply(`❓ Provide a valid Pinterest link!\nExample: *${prefix}pindl https://pin.it/...*`);
         }
         await m.react('⏳');
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/pinterest?apikey=gifted&url=${encodeURIComponent(url)}`).catch(() => null);
-          const media = res?.data?.result?.video || res?.data?.result?.image;
-          if (media) {
-            const isVid = res?.data?.result?.video;
-            await sock.sendMessage(m.chat, {
-              [isVid ? 'video' : 'image']: { url: media },
-              caption: `📌 *Pinterest Media Downloaded*`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply('⚠️ Failed to download Pinterest pin.');
-          }
+          const r = await sendVideo(sock, m, url);
+          if (r.ok) return m.react('✅');
+          await m.reply('⚠️ Could not download that Pinterest media. Try a direct video pin link.');
         } catch (e) {
-          await m.reply('❌ Pinterest download error: ' + e.message);
+          await m.reply('⚠️ Could not download that Pinterest media right now. Please try again later.');
         }
         break;
       }
 
       case 'soundcloud':
       case 'soundclouddl': {
-        const query = args.join(' ');
-        if (!query) return m.reply(`❓ Enter SoundCloud track name or link!\nExample: *${prefix}soundcloud Alan Walker Faded*`);
-        await m.react('☁️');
+        if (!looksLike(url, 'soundcloud.com')) {
+          return m.reply(`❓ Provide a valid SoundCloud link!\nExample: *${prefix}soundcloud https://soundcloud.com/...*`);
+        }
+        await m.react('⏳');
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/search/soundcloud?apikey=gifted&query=${encodeURIComponent(query)}`).catch(() => null);
-          const track = res?.data?.result?.[0];
-          if (track?.download_url) {
-            await sock.sendMessage(m.chat, {
-              audio: { url: track.download_url },
-              mimetype: 'audio/mpeg',
-              fileName: `${track.title || query}.mp3`
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply(`☁️ *SoundCloud Stream for:* "${query}"`);
-          }
+          const r = await sendAudio(sock, m, url);
+          if (r.ok) return m.react('✅');
+          await m.reply('⚠️ Could not download that SoundCloud track. It may be private or region-locked.');
         } catch (e) {
-          await m.reply('❌ SoundCloud error: ' + e.message);
+          await m.reply('⚠️ Could not download that SoundCloud track right now. Please try again later.');
         }
         break;
       }
 
       case 'spotify':
       case 'spotifydl': {
-        const query = args.join(' ');
-        if (!query) return m.reply(`❓ Enter song name or Spotify link!\nExample: *${prefix}spotify Starboy*`);
-        await m.react('🟢');
+        const query = args.join(' ').trim();
+        if (!query) {
+          return m.reply(`❓ Provide a song name or Spotify link!\nExample: *${prefix}spotify Kesariya*`);
+        }
+        await m.react('⏳');
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/search/spotify?apikey=gifted&query=${encodeURIComponent(query)}`).catch(() => null);
-          const track = res?.data?.result?.[0];
-          if (track) {
-            const msg = `🟢 *── SPOTIFY TRACK DETAILS ──* 🟢\n\n` +
-              `• *Title:* ${track.title}\n` +
-              `• *Artist:* ${track.artist || 'N/A'}\n` +
-              `• *Duration:* ${track.duration || 'N/A'}\n` +
-              `• *Link:* ${track.url || 'N/A'}\n\n` +
-              `_Use ${prefix}song ${track.title} to download this track directly._`;
-
-            if (track.image) {
-              await sock.sendMessage(m.chat, { image: { url: track.image }, caption: msg }, { quoted: m });
-            } else {
-              await m.reply(msg);
-            }
-            await m.react('✅');
-          } else {
-            await m.reply(`🟢 *Spotify search completed for:* "${query}"`);
-          }
+          // Spotify audio is DRM-protected, so we resolve the track name and
+          // fetch the matching audio from YouTube instead.
+          const searchTerm = query.replace(/https?:\/\/open\.spotify\.com\/\S+/i, '').trim() || query;
+          const r = await sendAudio(sock, m, searchTerm);
+          if (r.ok) return m.react('✅');
+          await m.reply(`⚠️ Could not find that track. Try *${prefix}song ${searchTerm}*.`);
         } catch (e) {
-          await m.reply('❌ Spotify error: ' + e.message);
+          await m.reply('⚠️ Could not fetch that track right now. Please try again later.');
         }
         break;
       }
