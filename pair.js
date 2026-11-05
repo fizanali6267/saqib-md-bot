@@ -124,10 +124,22 @@ router.get('/', async (req, res) => {
     const tempSessionId = `temp_pair_${num}_${Date.now()}`;
     const tempSessionDir = path.join(os.tmpdir(), `pair_session_${num}_${Date.now()}`);
     let authState;
+    // Tracks whether this pairing run is actually backed by MongoDB. If Atlas
+    // is unreachable (IP not whitelisted, network blip, etc.) we degrade
+    // gracefully to a local file session instead of failing the whole request.
+    let usingMongoForPair = false;
 
     if (config.MONGO_URI) {
-      authState = await useMongoDBAuthState(config.MONGO_URI, tempSessionId);
-    } else {
+      try {
+        authState = await useMongoDBAuthState(config.MONGO_URI, tempSessionId);
+        usingMongoForPair = true;
+      } catch (mongoErr) {
+        console.error('\u26a0\ufe0f MongoDB unavailable for pairing \u2014 falling back to local file session.');
+        console.error('   Reason:', mongoErr?.message || mongoErr);
+      }
+    }
+
+    if (!authState) {
       if (!fs.existsSync(tempSessionDir)) {
         fs.mkdirSync(tempSessionDir, { recursive: true });
       }
@@ -190,8 +202,23 @@ router.get('/', async (req, res) => {
             try { closePairSocket(num, 'Pairing completed successfully'); } catch (_) {}
 
             // Promote validated credentials into the primary bot session
+            const promoteToLocalSession = () => {
+              const mainSessionDir = path.join(__dirname, 'session');
+              if (!fs.existsSync(mainSessionDir)) fs.mkdirSync(mainSessionDir, { recursive: true });
+              // wipe stale main session before promoting a fresh one
+              for (const old of fs.readdirSync(mainSessionDir)) {
+                try { fs.rmSync(path.join(mainSessionDir, old), { recursive: true, force: true }); } catch (_) {}
+              }
+              const files = fs.readdirSync(tempSessionDir);
+              for (let f of files) {
+                // Skip pairing-time Signal sessions so they rebuild cleanly.
+                if (/^session-.*\.json$/.test(f)) continue;
+                fs.copyFileSync(path.join(tempSessionDir, f), path.join(mainSessionDir, f));
+              }
+            };
+
             try {
-              if (config.MONGO_URI) {
+              if (usingMongoForPair) {
                 const targetId = config.SESSION_ID || 'saqib_md_session';
                 await promoteSession(tempSessionId, targetId);
                 // CRITICAL: wipe Signal sessions created by the pairing socket.
@@ -200,25 +227,22 @@ router.get('/', async (req, res) => {
                 const cleared = await clearSignalSessions(targetId);
                 if (cleared) console.log(`\ud83e\uddf9 Cleared ${cleared} pairing-time Signal sessions (they will rebuild fresh).`);
               } else {
-                const mainSessionDir = path.join(__dirname, 'session');
-                if (!fs.existsSync(mainSessionDir)) fs.mkdirSync(mainSessionDir, { recursive: true });
-                // wipe stale main session before promoting a fresh one
-                for (const old of fs.readdirSync(mainSessionDir)) {
-                  try { fs.rmSync(path.join(mainSessionDir, old), { recursive: true, force: true }); } catch (_) {}
-                }
-                const files = fs.readdirSync(tempSessionDir);
-                for (let f of files) {
-                  // Skip pairing-time Signal sessions so they rebuild cleanly.
-                  if (/^session-.*\.json$/.test(f)) continue;
-                  fs.copyFileSync(path.join(tempSessionDir, f), path.join(mainSessionDir, f));
-                }
+                promoteToLocalSession();
               }
               console.log('\ud83d\udcbe Session promoted to main bot storage.');
             } catch (e) {
               console.error('Session promote error:', e?.message || e);
+              // Mongo promotion failed mid-flight \u2014 keep the freshly paired
+              // credentials locally so the bot can still come online.
+              try {
+                promoteToLocalSession();
+                console.log('\ud83d\udcbe Session promoted to LOCAL storage as a fallback.');
+              } catch (e2) {
+                console.error('Local session fallback error:', e2?.message || e2);
+              }
             }
 
-            if (!config.MONGO_URI) {
+            if (!usingMongoForPair) {
               try { fs.rmSync(tempSessionDir, { recursive: true, force: true }); } catch (_) {}
             }
 
@@ -249,7 +273,7 @@ router.get('/', async (req, res) => {
           if (statusCode === DisconnectReason.loggedOut) {
             pairingStatusMap.set(num, 'logged_out');
             closePairSocket(num, 'Logged out');
-            if (config.MONGO_URI) deleteSession(tempSessionId);
+            if (usingMongoForPair) deleteSession(tempSessionId);
           }
         }
       });
@@ -271,7 +295,7 @@ router.get('/', async (req, res) => {
       const timeoutId = setTimeout(() => {
         console.log(`⏱️ Pairing socket timed out for ${num}. Closing socket safely.`);
         closePairSocket(num, 'Pairing timeout after 150 seconds');
-        if (config.MONGO_URI) deleteSession(tempSessionId);
+        if (usingMongoForPair) deleteSession(tempSessionId);
         else {
           try { fs.rmSync(tempSessionDir, { recursive: true, force: true }); } catch (_) {}
         }
