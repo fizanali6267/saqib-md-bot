@@ -213,19 +213,30 @@ app.get('/blocktest', async (req, res) => {
     // 2) Blocklist BEFORE
     await tryStep('blocklistBefore', () => sock.fetchBlocklist());
 
-    // 3) Block by phone-number JID
+    // 3) Block by phone-number JID (legacy path, expected to 500)
     await tryStep('blockByPn', () => sock.updateBlockStatus(pnJid, 'block'));
     await tryStep('blocklistAfterPn', () => sock.fetchBlocklist());
 
-    // 4) If PN didn't take, try blocking by LID
+    // 4) FIXED path: block IQ carrying BOTH jid (LID) and pn_jid (PN)
     if (lidJid) {
-      await tryStep('blockByLid', () => sock.updateBlockStatus(lidJid, 'block'));
-      await tryStep('blocklistAfterLid', () => sock.fetchBlocklist());
+      await tryStep('blockFixed', () => sock.query({
+        tag: 'iq',
+        attrs: { xmlns: 'blocklist', to: 's.whatsapp.net', type: 'set' },
+        content: [{ tag: 'item', attrs: { action: 'block', jid: lidJid, pn_jid: pnJid } }],
+      }));
+      await tryStep('blocklistAfterFixed', () => sock.fetchBlocklist());
     }
 
-    // 5) Restore: unblock whatever we may have set
-    await tryStep('unblockPn', () => sock.updateBlockStatus(pnJid, 'unblock'));
-    if (lidJid) await tryStep('unblockLid', () => sock.updateBlockStatus(lidJid, 'unblock'));
+    // 5) Restore: unblock via LID (proven to work)
+    if (lidJid) {
+      await tryStep('unblockFixed', () => sock.query({
+        tag: 'iq',
+        attrs: { xmlns: 'blocklist', to: 's.whatsapp.net', type: 'set' },
+        content: [{ tag: 'item', attrs: { action: 'unblock', jid: lidJid } }],
+      }));
+    } else {
+      await tryStep('unblockPn', () => sock.updateBlockStatus(pnJid, 'unblock'));
+    }
     await tryStep('blocklistFinal', () => sock.fetchBlocklist());
 
     res.json({ ok: true, out });
