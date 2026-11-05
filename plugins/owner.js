@@ -20,6 +20,69 @@ function resolveTargetJid(raw) {
   return null;
 }
 
+// Resolve a raw identifier into BOTH the phone-number JID and the WhatsApp LID.
+// The LID is required: since WhatsApp's LID rollout the block IQ must carry
+// `jid` (the LID) *and* `pn_jid` (the phone number), otherwise the server
+// answers with a generic 500 "Internal Server Error" and nothing is blocked.
+// See WhiskeySockets/Baileys issue #2200.
+async function resolveIdentities(sock, raw) {
+  const s = String(raw || '').trim();
+  if (!s) return { pnJid: null, lidJid: null, exists: null };
+
+  if (s.includes('@lid')) {
+    const lid = s.split(':')[0].includes('@') ? s.split(':')[0] : s;
+    return { pnJid: null, lidJid: lid.endsWith('@lid') ? lid : `${lid}@lid`, exists: null };
+  }
+
+  let digits = s.replace(/[^0-9]/g, '');
+  if (digits.length > 15) digits = digits.slice(0, 15);
+  if (!digits) return { pnJid: null, lidJid: null, exists: null };
+
+  let pnJid = `${digits}@s.whatsapp.net`;
+  let lidJid = null;
+  let exists = null;
+  try {
+    if (typeof sock.onWhatsApp === 'function') {
+      const wa = await sock.onWhatsApp(digits);
+      if (Array.isArray(wa) && wa[0]) {
+        if (wa[0].jid) {
+          const pn = String(wa[0].jid).split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+          if (pn) pnJid = `${pn}@s.whatsapp.net`;
+        }
+        if (wa[0].lid) {
+          const lid = String(wa[0].lid).split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+          if (lid) lidJid = `${lid}@lid`;
+        }
+        exists = wa[0].exists !== false;
+      }
+    }
+  } catch (_) {}
+  return { pnJid, lidJid, exists };
+}
+
+// Send the LID-aware blocklist IQ. This is the ONLY reliable way to block /
+// unblock on an account that has been migrated to WhatsApp's LID addressing.
+async function nativeBlockStatus(sock, { pnJid, lidJid }, action) {
+  if (!sock || typeof sock.query !== 'function') throw new Error('socket query unavailable');
+  if (action === 'block') {
+    if (!pnJid) throw new Error('No phone-number JID for this contact');
+    if (!lidJid) throw new Error('Could not resolve the WhatsApp LID for this contact');
+    await sock.query({
+      tag: 'iq',
+      attrs: { xmlns: 'blocklist', to: 's.whatsapp.net', type: 'set' },
+      content: [{ tag: 'item', attrs: { action: 'block', jid: lidJid, pn_jid: pnJid } }],
+    });
+  } else {
+    const jid = lidJid || pnJid;
+    if (!jid) throw new Error('No target JID');
+    await sock.query({
+      tag: 'iq',
+      attrs: { xmlns: 'blocklist', to: 's.whatsapp.net', type: 'set' },
+      content: [{ tag: 'item', attrs: { action: 'unblock', jid } }],
+    });
+  }
+}
+
 module.exports = {
   name: 'owner',
   commands: ['mode', 'public', 'private', 'setpp', 'setppbot', 'block', 'unblock', 'blocklist', 'broadcast', 'bc', 'join', 'leave', 'left'],
@@ -135,88 +198,76 @@ module.exports = {
 
         const action = command === 'block' ? 'block' : 'unblock';
 
-        // Build every plausible identifier for the target. WhatsApp's blocklist
-        // IQ only accepts a real phone-number JID; a raw LID silently fails.
-        const candidates = [];
-        const push = (jid) => {
-          if (!jid) return;
-          const s = String(jid).trim();
-          if (!s.includes('@')) {
-            const d = s.replace(/[^0-9]/g, '');
-            if (d.length >= 8 && d.length <= 15) candidates.push(`${d}@s.whatsapp.net`);
-            return;
-          }
-          const pn = resolveTargetJid(s);
-          if (pn) candidates.push(pn);
-          // Keep the raw id as a last-resort (some groups address by LID).
-          if (!candidates.includes(s)) candidates.push(s);
-        };
-
-        push(m.mentionedJid && m.mentionedJid[0]);
+        // Collect every plausible identifier for the target.
+        const raws = [];
+        if (m.mentionedJid && m.mentionedJid[0]) raws.push(m.mentionedJid[0]);
         if (m.quoted) {
-          push(m.quoted.sender);
-          push(m.quoted.senderLid);
+          if (m.quoted.sender) raws.push(m.quoted.sender);
+          if (m.quoted.senderLid) raws.push(m.quoted.senderLid);
         }
-        if (args[0]) push(args[0]);
+        if (args[0]) raws.push(args[0]);
 
-        const unique = [...new Set(candidates)].filter(Boolean);
-        if (!unique.length) {
+        if (!raws.length) {
           return m.reply(
             `❓ *Usage:*\n• Reply to a message and type *${prefix}${command}*\n• Or mention someone: *${prefix}${command} @user*\n• Or give a number: *${prefix}${command} 923001234567*`
           );
+        }
+
+        // ---- Resolve phone-number JID + LID --------------------------------
+        let pnJid = null;
+        let lidJid = null;
+        let exists = null;
+        for (const raw of raws) {
+          const r = await resolveIdentities(sock, raw);
+          if (!pnJid && r.pnJid) pnJid = r.pnJid;
+          if (!lidJid && r.lidJid) lidJid = r.lidJid;
+          if (r.exists === false) exists = false;
+          if (pnJid && lidJid) break;
+        }
+
+        const target = pnJid || lidJid;
+        if (!target) {
+          return m.reply(`❓ Could not understand that contact. Give a number like *${prefix}${command} 923001234567*`);
         }
 
         // Never allow blocking the bot itself or the owner.
         const selfNum = String(sock?.user?.id || '').replace(/[^0-9]/g, '').slice(0, 12);
         const ownerNums = (config.OWNER_NUMBERS || []).map((n) => String(n).replace(/[^0-9]/g, ''));
         const isProtected = (jid) => {
-          const d = String(jid).split('@')[0].replace(/[^0-9]/g, '');
+          if (!jid) return false;
+          const d = String(jid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
           if (!d) return false;
           if (selfNum && d === selfNum) return true;
           if (ownerNums.includes(d)) return true;
           return false;
         };
-
-        // ---- Resolve the single best target -------------------------------
-        const pnJid = unique.find((j) => j.endsWith('@s.whatsapp.net')) || null;
-        const rawJid = unique.find((j) => !j.endsWith('@s.whatsapp.net')) || null;
-        const target = pnJid || rawJid;
-
-        if (isProtected(target)) {
+        if (isProtected(pnJid) || isProtected(lidJid)) {
           return m.reply('🛡️ *You cannot block the bot itself or the owner.*');
         }
 
-        const num = String(target).split('@')[0];
+        const num = String(pnJid || lidJid).split('@')[0].split(':')[0];
 
-        // ---- 1) Bot-level blocklist (always works, even for LID) ----------
+        // ---- 1) Bot-level blocklist (always works, even without a LID) ----
         let listChanged = false;
         if (action === 'block') {
-          listChanged = blocklist.add(pnJid || target);
-          if (rawJid) blocklist.add(rawJid);
+          if (pnJid) listChanged = blocklist.add(pnJid) || listChanged;
+          if (lidJid) listChanged = blocklist.add(lidJid) || listChanged;
         } else {
-          listChanged = blocklist.remove(pnJid || target);
-          if (rawJid) blocklist.remove(rawJid);
+          if (pnJid) listChanged = blocklist.remove(pnJid) || listChanged;
+          if (lidJid) listChanged = blocklist.remove(lidJid) || listChanged;
         }
 
-        // ---- 2) Native WhatsApp block (best effort) -----------------------
-        // IMPORTANT: `updateBlockStatus` resolves even when WhatsApp silently
-        // rejects the request, and it can only address a real phone-number JID.
-        // The old code replied "has been blocked!" BEFORE checking anything,
-        // so the user was told the contact was blocked while nothing happened.
-        // We now call it, then VERIFY against the server's own blocklist.
+        // ---- 2) Native WhatsApp block (LID-aware IQ) ----------------------
         let waOk = false;
         let waErr = null;
-        for (const jid of unique) {
-          try {
-            await sock.updateBlockStatus(jid, action);
-            waOk = true;
-            break;
-          } catch (e) {
-            waErr = e;
-          }
+        try {
+          await nativeBlockStatus(sock, { pnJid, lidJid }, action);
+          waOk = true;
+        } catch (e) {
+          waErr = e;
         }
 
-        // Verify with the authoritative server-side blocklist.
+        // ---- 3) Verify against the server's authoritative blocklist -------
         let verified = null; // true / false / null (couldn't check)
         try {
           if (typeof sock.fetchBlocklist === 'function') {
@@ -224,13 +275,14 @@ module.exports = {
             const wanted = new Set(
               (serverList || []).map((j) => String(j).split('@')[0].split(':')[0].replace(/[^0-9]/g, ''))
             );
-            const targetDigits = String(num).replace(/[^0-9]/g, '');
-            verified = wanted.has(targetDigits);
+            const keys = [String(num).replace(/[^0-9]/g, '')];
+            if (lidJid) keys.push(String(lidJid).split('@')[0].replace(/[^0-9]/g, ''));
+            if (pnJid) keys.push(String(pnJid).split('@')[0].replace(/[^0-9]/g, ''));
+            verified = keys.some((k) => k && wanted.has(k));
           }
         } catch (_) { verified = null; }
 
         const waConfirmed = verified === true;
-        const waFailed = verified === false || (!waOk && verified !== true);
 
         if (action === 'block') {
           if (waConfirmed) {
@@ -253,12 +305,17 @@ module.exports = {
             );
           }
         } else {
-          if (waConfirmed === false && !listChanged) {
-            await m.reply(`❌ *@${num}* was not in the blocklist — nothing to unblock.`);
-          } else {
+          if (waOk || listChanged) {
             await m.reply(`✅ *@${num}* has been unblocked.`, {
               mentions: [`${num}@s.whatsapp.net`],
             });
+          } else if (verified === false) {
+            await m.reply(`❌ *@${num}* was not in the blocklist — nothing to unblock.`);
+          } else {
+            await m.reply(
+              `❌ *Could not unblock @${num}.*` +
+              (waErr ? `\n_Reason:_ ${(waErr.message || '').slice(0, 120)}` : '')
+            );
           }
         }
         break;

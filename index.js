@@ -183,68 +183,6 @@ app.get('/diag', async (req, res) => {
   }
 });
 
-// TEMPORARY owner-only ground-truth probe for .block/.unblock.
-// Usage: /blocktest?key=<owner>&num=923001234567
-// Tests phone-number-JID blocking vs LID blocking and returns the raw result
-// of every WhatsApp IQ so we can see exactly what the server accepts.
-app.get('/blocktest', async (req, res) => {
-  try {
-    const key = String(req.query.key || '').replace(/[^0-9]/g, '');
-    const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
-    if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
-    const num = String(req.query.num || '').replace(/[^0-9]/g, '');
-    if (!num) return res.status(400).json({ ok: false, error: 'num required' });
-    const inst = getPrimaryInstance();
-    const sock = inst && inst.sock;
-    if (!sock) return res.status(503).json({ ok: false, error: 'no live socket' });
-
-    const out = { num, me: { id: sock.user?.id, lid: sock.user?.lid } };
-    const tryStep = async (label, fn) => {
-      try { const r = await fn(); out[label] = { ok: true, result: r }; return r; }
-      catch (e) { out[label] = { ok: false, error: e?.message || String(e), output: e?.output }; return undefined; }
-    };
-
-    // 1) Resolve PN + LID
-    const wa = await tryStep('onWhatsApp', () => sock.onWhatsApp(num));
-    const pnJid = `${num}@s.whatsapp.net`;
-    const lidJid = Array.isArray(wa) && wa[0] && wa[0].lid ? String(wa[0].lid).split('@')[0] + '@lid' : null;
-    out.resolved = { pnJid, lidJid, exists: Array.isArray(wa) ? wa[0]?.exists : null };
-
-    // 2) Blocklist BEFORE
-    await tryStep('blocklistBefore', () => sock.fetchBlocklist());
-
-    // 3) Block by phone-number JID (legacy path, expected to 500)
-    await tryStep('blockByPn', () => sock.updateBlockStatus(pnJid, 'block'));
-    await tryStep('blocklistAfterPn', () => sock.fetchBlocklist());
-
-    // 4) FIXED path: block IQ carrying BOTH jid (LID) and pn_jid (PN)
-    if (lidJid) {
-      await tryStep('blockFixed', () => sock.query({
-        tag: 'iq',
-        attrs: { xmlns: 'blocklist', to: 's.whatsapp.net', type: 'set' },
-        content: [{ tag: 'item', attrs: { action: 'block', jid: lidJid, pn_jid: pnJid } }],
-      }));
-      await tryStep('blocklistAfterFixed', () => sock.fetchBlocklist());
-    }
-
-    // 5) Restore: unblock via LID (proven to work)
-    if (lidJid) {
-      await tryStep('unblockFixed', () => sock.query({
-        tag: 'iq',
-        attrs: { xmlns: 'blocklist', to: 's.whatsapp.net', type: 'set' },
-        content: [{ tag: 'item', attrs: { action: 'unblock', jid: lidJid } }],
-      }));
-    } else {
-      await tryStep('unblockPn', () => sock.updateBlockStatus(pnJid, 'unblock'));
-    }
-    await tryStep('blocklistFinal', () => sock.fetchBlocklist());
-
-    res.json({ ok: true, out });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
-
 // Build/version probe so a deploy can be verified from outside.
 app.get('/version', (req, res) => {
   res.json({
