@@ -113,6 +113,7 @@ const lid = require('./lib/lid');
 const { useMongoDBAuthState } = require('./lib/mongoAuth');
 const { useFastAuthState } = require('./lib/fastAuthState');
 const { resolveAlias } = require('./lib/aliasMap');
+const viewOnceCache = require('./lib/viewOnceCache');
 const pairRouter = require('./pair');
 const { generateChatbotReply } = require('./plugins/chatbot');
 
@@ -870,6 +871,16 @@ async function startBot() {
         } catch (_) {}
       }
 
+      // Private Mode Silence Guard (EARLY)
+      // Runs before auto-read, auto-view-once, chatbot and command dispatch so
+      // a private-mode bot never replies to non-owners, no matter which feature
+      // would otherwise fire first.
+      const __isOwnerEarly = config.checkIsOwner(m, sock);
+      if (config.WORK_TYPE === 'private' && !__isOwnerEarly) {
+        console.log(`\ud83d\udd12 Private mode: ignored message from ${m.sender}`);
+        continue;
+      }
+
       // Auto Read (Blue Tick vs Double Grey Tick)
       if (config.AUTO_READ && m.key && !m.fromMe) {
         sock.readMessages([m.key]).catch(() => null);
@@ -910,27 +921,49 @@ async function startBot() {
         continue;
       }
 
-      // Issue 6 Fix: Detect viewOnce, viewOnceMessageV2, and viewOnceMessageV2Extension with accurate image/video type detection
-      if ((config.AUTO_VIEW_ONCE || config.ANTI_VIEW_ONCE) && (m.isViewOnce || m.type === 'viewOnceMessage' || m.msg?.viewOnce)) {
-        try {
-          const buffer = await m.download();
-          const mediaType = (m.type?.includes('image') || m.msg?.mimetype?.includes('image')) ? 'image' : 'video';
-          const ownerJid = config.getOwnerJid(sock);
-          const senderNum = m.sender.split('@')[0].split(':')[0];
-
-          if (ownerJid) {
-            await sock.sendMessage(ownerJid, {
-              [mediaType]: buffer,
-              caption: `🔓 *── AUTO VIEW-ONCE RECOVERED ──* 🔓\n\n` +
-                       `👤 *Sent by:* @${senderNum}\n` +
-                       `💬 *Chat:* ${m.isGroup ? 'Group Chat' : 'Direct Message'}\n` +
-                       `🕒 *Time:* ${new Date().toLocaleTimeString()}\n\n` +
-                       `_Saved secretly to your inbox by Saqib-MD_`,
-              mentions: [m.sender]
-            });
+      // View-once handling
+      // 1) ALWAYS cache the media as soon as it arrives (before the recipient
+      //    opens it). WhatsApp removes the mediaKey after viewing, which caused
+      //    "Cannot derive from empty media key" on later .vv calls.
+      // 2) If AUTO_VIEW_ONCE / ANTI_VIEW_ONCE is on, forward the cached buffer
+      //    to the owner's inbox.
+      const __isVO = !!(m.isViewOnce || m.type === 'viewOnceMessage' || m.msg?.viewOnce);
+      if (__isVO) {
+        const mediaType = (m.type?.includes('image') || m.msg?.mimetype?.includes('image')) ? 'image' : 'video';
+        let buffer = null;
+        const cached = viewOnceCache.get(m.id);
+        if (cached) {
+          buffer = cached.buffer;
+        } else {
+          try {
+            buffer = await m.download();
+            if (buffer && buffer.length) {
+              viewOnceCache.put(m.id, { buffer, type: mediaType, sender: m.sender, chat: m.chat });
+            }
+          } catch (err) {
+            console.error('View-once cache download failed:', err?.message || err);
           }
-        } catch (err) {
-          console.error('Auto view-once recovery failed:', err);
+        }
+
+        if ((config.AUTO_VIEW_ONCE || config.ANTI_VIEW_ONCE) && buffer && buffer.length) {
+          try {
+            const ownerJid = config.getOwnerJid(sock);
+            const senderNum = m.sender.split('@')[0].split(':')[0];
+
+            if (ownerJid) {
+              await sock.sendMessage(ownerJid, {
+                [mediaType]: buffer,
+                caption: `\ud83d\udd13 *\u2500\u2500 AUTO VIEW-ONCE RECOVERED \u2500\u2500* \ud83d\udd13\n\n` +
+                         `\ud83d\udc64 *Sent by:* @${senderNum}\n` +
+                         `\ud83d\udcac *Chat:* ${m.isGroup ? 'Group Chat' : 'Direct Message'}\n` +
+                         `\ud83d\udd52 *Time:* ${new Date().toLocaleTimeString()}\n\n` +
+                         `_Saved secretly to your inbox by Saqib-MD_`,
+                mentions: [m.sender]
+              });
+            }
+          } catch (err) {
+            console.error('Auto view-once recovery failed:', err);
+          }
         }
       }
 

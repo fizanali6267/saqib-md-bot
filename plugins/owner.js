@@ -22,7 +22,7 @@ function resolveTargetJid(raw) {
 
 module.exports = {
   name: 'owner',
-  commands: ['mode', 'public', 'private', 'setpp', 'setppbot', 'block', 'unblock', 'broadcast', 'bc', 'join'],
+  commands: ['mode', 'public', 'private', 'setpp', 'setppbot', 'block', 'unblock', 'broadcast', 'bc', 'join', 'leave', 'left'],
   execute: async (sock, m, { command, args, prefix }) => {
     // Owner Only Authorization check
     const isOwner = config.checkIsOwner(m, sock);
@@ -45,12 +45,14 @@ module.exports = {
 
       case 'public': {
         config.WORK_TYPE = 'public';
+        config.persistSettings?.();
         await m.reply(`🌐 *Bot Mode switched to PUBLIC!*\nEveryone can now interact with Saqib-MD.`);
         break;
       }
 
       case 'private': {
         config.WORK_TYPE = 'private';
+        config.persistSettings?.();
         await m.reply(`🔒 *Bot Mode switched to PRIVATE!*\nBot is now in stealth mode. Only the owner can issue commands.`);
         break;
       }
@@ -121,38 +123,71 @@ module.exports = {
       case 'block':
       case 'unblock': {
         const action = command === 'block' ? 'block' : 'unblock';
-        const rawTarget =
-          (m.mentionedJid && m.mentionedJid[0]) ||
-          (m.quoted && (m.quoted.sender || m.quoted.participant)) ||
-          args[0] ||
-          null;
 
-        if (!rawTarget) {
+        // Build every plausible identifier for the target. WhatsApp's blocklist
+        // IQ only accepts a real phone-number JID; a raw LID silently fails.
+        const candidates = [];
+        const push = (jid) => {
+          if (!jid) return;
+          const s = String(jid).trim();
+          if (!s.includes('@')) {
+            const d = s.replace(/[^0-9]/g, '');
+            if (d.length >= 8 && d.length <= 15) candidates.push(`${d}@s.whatsapp.net`);
+            return;
+          }
+          const pn = resolveTargetJid(s);
+          if (pn) candidates.push(pn);
+          // Keep the raw id as a last-resort (some groups address by LID).
+          if (!candidates.includes(s)) candidates.push(s);
+        };
+
+        push(m.mentionedJid && m.mentionedJid[0]);
+        if (m.quoted) {
+          push(m.quoted.sender);
+          push(m.quoted.senderLid);
+        }
+        if (args[0]) push(args[0]);
+
+        const unique = [...new Set(candidates)].filter(Boolean);
+        if (!unique.length) {
           return m.reply(
             `❓ *Usage:*\n• Reply to a message and type *${prefix}${command}*\n• Or mention someone: *${prefix}${command} @user*\n• Or give a number: *${prefix}${command} 923001234567*`
           );
         }
 
-        const target = resolveTargetJid(rawTarget);
-        if (!target) {
-          return m.reply(
-            `⚠️ I couldn't resolve *${String(rawTarget).split('@')[0]}* to a real phone number.\n` +
-              `This happens with WhatsApp's hidden *LID* ids. Reply directly to one of their messages (or send their number) and try again.`
-          );
+        // If we have a phone number, verify it exists on WhatsApp first so the
+        // user gets a clear reason instead of a cryptic IQ error.
+        const firstPn = unique.find((j) => j.endsWith('@s.whatsapp.net'));
+        if (firstPn && typeof sock.onWhatsApp === 'function') {
+          try {
+            const [check] = await sock.onWhatsApp(firstPn.split('@')[0]);
+            if (!check || !check.exists) {
+              return m.reply(`⚠️ *${firstPn.split('@')[0]}* is not registered on WhatsApp.`);
+            }
+          } catch (_) { /* ignore — try the block anyway */ }
         }
 
-        try {
-          await sock.updateBlockStatus(target, action);
-          const num = target.split('@')[0];
-          if (action === 'block') {
-            await m.reply(`🚫 *@${num}* has been blocked from contacting the bot!`, { mentions: [target] });
-          } else {
-            await m.reply(`✅ *@${num}* has been unblocked!`, { mentions: [target] });
+        let lastErr = null;
+        for (const target of unique) {
+          try {
+            await sock.updateBlockStatus(target, action);
+            const num = target.split('@')[0];
+            if (action === 'block') {
+              await m.reply(`🚫 *@${num}* has been blocked from contacting the bot!`, { mentions: [target] });
+            } else {
+              await m.reply(`✅ *@${num}* has been unblocked!`, { mentions: [target] });
+            }
+            return;
+          } catch (e) {
+            lastErr = e;
           }
-        } catch (e) {
-          const detail = (e && (e.message || e.output?.payload?.message)) || 'unknown error';
-          await m.reply(`❌ Failed to ${action} *${target.split('@')[0]}*.\n*Reason:* ${detail}`);
         }
+
+        const detail = (lastErr && (lastErr.message || lastErr.output?.payload?.message)) || 'unknown error';
+        await m.reply(
+          `❌ Failed to ${action} that contact.\n*Reason:* ${detail}\n\n` +
+          `💡 *Tip:* If this is a LID contact, reply directly to one of their messages (or send their phone number) and try again.`
+        );
         break;
       }
 
@@ -182,16 +217,35 @@ module.exports = {
       }
 
       case 'join': {
-        const link = args[0];
-        if (!link || !link.includes('chat.whatsapp.com/')) {
-          return m.reply(`❓ Provide a valid WhatsApp group invite link!\nExample: *${prefix}join https://chat.whatsapp.com/xxx*`);
+        const raw = args.join(' ').trim();
+        const match = raw.match(/chat\.whatsapp\.com\/([A-Za-z0-9]+)/i);
+        if (!match) {
+          return m.reply(`❓ Provide a valid WhatsApp group invite link!\nExample: *${prefix}join https://chat.whatsapp.com/xxxxxxxx*`);
         }
+        const code = match[1];
         try {
-          const code = link.split('chat.whatsapp.com/')[1].trim();
-          await sock.groupAcceptInvite(code);
-          await m.reply(`✅ Successfully joined the group!`);
+          const joined = await sock.groupAcceptInvite(code);
+          await m.reply(`✅ Successfully joined the group!${joined ? `\n🆔 ${joined}` : ''}`);
         } catch (e) {
-          await m.reply('❌ Failed to join group. Invite link may be revoked or expired.');
+          const msg = String(e && (e.message || e.output?.payload?.message) || 'unknown error');
+          if (/already|conflict|409/i.test(msg)) {
+            return m.reply('ℹ️ The bot is already a member of that group.');
+          }
+          await m.reply(`❌ Failed to join group.\n*Reason:* ${msg}\n\n💡 The invite link may be expired, revoked, or the group may be full.`);
+        }
+        break;
+      }
+
+      case 'leave':
+      case 'left': {
+        if (!m.isGroup) {
+          return m.reply(`❓ This command only works inside a group.\nSend *${prefix}${command}* in the group you want the bot to leave.`);
+        }
+        await m.reply(`👋 *Goodbye!* Saqib-MD is leaving this group now.`);
+        try {
+          await sock.groupLeave(m.chat);
+        } catch (e) {
+          await m.reply(`❌ Failed to leave the group: ${e && e.message ? e.message : 'unknown error'}`);
         }
         break;
       }

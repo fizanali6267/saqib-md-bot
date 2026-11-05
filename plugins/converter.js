@@ -167,18 +167,66 @@ module.exports = {
 
       case 'translate':
       case 'tr': {
-        const text = args.slice(1).join(' ') || (m.quoted ? m.quoted.text : '');
-        const targetLang = args[0] || 'ur';
+        // Supported forms:
+        //   .tr <lang> <text>     e.g. .tr en Salam
+        //   .tr <text>            e.g. .tr Salam  (auto -> Urdu)
+        //   .tr <lang>            (reply to a message)
+        //   .tr                   (reply to a message, auto -> Urdu)
+        const isLang = (s) => /^[a-z]{2,3}(-[a-z]{2,4})?$/i.test(String(s || ''));
+        let targetLang = 'ur';
+        let text = '';
 
-        if (!text) return m.reply(`❓ Usage: *${prefix}tr ur How are you?* or quote a message.`);
-
-        try {
-          const res = await axios.get(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`);
-          const translated = res.data[0].map(s => s[0]).join('');
-          await m.reply(`🌐 *Translation (${targetLang.toUpperCase()}):*\n\n${translated}`);
-        } catch (e) {
-          await m.reply('❌ Translation failed: ' + e.message);
+        if (args.length && isLang(args[0]) && args.length > 1) {
+          targetLang = args[0].toLowerCase();
+          text = args.slice(1).join(' ');
+        } else if (args.length && isLang(args[0]) && m.quoted && m.quoted.text) {
+          targetLang = args[0].toLowerCase();
+          text = m.quoted.text;
+        } else {
+          text = args.join(' ') || (m.quoted ? (m.quoted.text || '') : '');
         }
+
+        if (!text || !text.trim()) {
+          return m.reply(
+            `❓ *Usage:*\n` +
+            `• *${prefix}tr en Hello world* → translate to English\n` +
+            `• *${prefix}tr ur Hello world* → translate to Urdu\n` +
+            `• *${prefix}tr Hello world* → auto-translate to Urdu\n` +
+            `• Reply to any message with *${prefix}tr* (or *${prefix}tr en*)`
+          );
+        }
+
+        await m.react('🌐').catch(() => null);
+        const endpoints = [
+          'https://translate.googleapis.com/translate_a/single',
+          'https://translate.google.com/translate_a/single'
+        ];
+        let translated = null;
+        let lastErr = null;
+        for (const url of endpoints) {
+          try {
+            const res = await axios.get(url, {
+              params: { client: 'gtx', sl: 'auto', tl: targetLang, dt: 't', q: text },
+              timeout: 20000,
+              headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            const data = res.data;
+            if (Array.isArray(data) && Array.isArray(data[0])) {
+              translated = data[0].map((part) => (part && part[0]) || '').join('');
+            }
+            if (translated) break;
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+
+        if (!translated) {
+          await m.react('❌').catch(() => null);
+          return m.reply(`❌ Translation failed${lastErr ? `: ${lastErr.message}` : '.'}\nPlease try again in a moment.`);
+        }
+
+        await m.react('✅').catch(() => null);
+        await m.reply(`🌐 *Translation (${targetLang.toUpperCase()}):*\n\n${translated}`);
         break;
       }
 

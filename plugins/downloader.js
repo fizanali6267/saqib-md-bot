@@ -44,6 +44,91 @@ async function youtubeSearch(query, limit = 6) {
 }
 
 // ---------------------------------------------------------------------------
+// YouTube oEmbed — gets the real video title without downloading anything.
+// YouTube blocks datacenter IPs for media, but oEmbed still works. We use the
+// title to find the same track on JioSaavn (which is never IP-blocked).
+// ---------------------------------------------------------------------------
+async function youtubeTitleFromUrl(url) {
+  try {
+    const res = await axios.get('https://www.youtube.com/oembed', {
+      params: { url, format: 'json' },
+      timeout: 15000,
+      headers: { 'User-Agent': UA }
+    });
+    return res.data && res.data.title ? String(res.data.title) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function cleanSongQuery(title) {
+  return String(title || '')
+    .replace(/\((?:official|lyrics?|audio|video|music video|visualizer|hd|4k)[^)]*\)/gi, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\|.*$/, ' ')
+    .replace(/\s*-\s*topic\s*$/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
+// resolveSong — find a full-length audio file for any song name, worldwide.
+//
+// Order of preference:
+//   1. JioSaavn  — 320 kbps, unbeatable for Pakistani / Indian music.
+//   2. SoundCloud — carries the Western masters JioSaavn does not license
+//                   (Ed Sheeran, Imagine Dragons, ...) and works from
+//                   datacenter IPs. iTunes metadata sharpens the search.
+//   3. yt-dlp     — last resort (usually blocked, but free to try).
+// ---------------------------------------------------------------------------
+async function resolveSong(query) {
+  const saavn = require('../lib/saavn');
+  const soundcloud = require('../lib/soundcloud');
+  let canon = null;
+  try { canon = await soundcloud.canonicalize(query); } catch (_) { canon = null; }
+
+  // 1) JioSaavn
+  let saavnBest = null;
+  try {
+    const search = await saavn.searchSongs(query, 12);
+    if (search.ok && search.results.length) {
+      saavnBest = saavn.rankSongs(search.results, query, canon && canon.artists)[0];
+    }
+  } catch (_) { saavnBest = null; }
+
+  const hints = canon && canon.artists;
+  if (saavnBest && saavn.isStrongMatch(saavnBest, query, hints)) {
+    try {
+      const dl = await saavn.downloadSong(query, { limit: 12, artistHint: hints });
+      if (dl.ok) return dl;
+    } catch (_) { /* fall through */ }
+  }
+
+  // 2) SoundCloud (worldwide originals)
+  try {
+    const sc = await soundcloud.downloadSong(query, { limit: 12 });
+    if (sc.ok) return sc;
+  } catch (_) { /* fall through */ }
+
+  // 3) JioSaavn best-effort (a cover is better than nothing)
+  if (saavnBest) {
+    try {
+      const dl = await saavn.downloadSong(query, { limit: 12, artistHint: hints });
+      if (dl.ok) return dl;
+    } catch (_) { /* fall through */ }
+  }
+
+  // 4) yt-dlp last resort
+  try {
+    const yt = await ytdlp.downloadAudio(query, { bitrate: '128' });
+    if (yt.ok) return yt;
+    return { ok: false, error: yt.error };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Aptoide APK search + direct download (public API, no key).
 // ---------------------------------------------------------------------------
 async function aptoideLookup(name) {
@@ -206,31 +291,43 @@ module.exports = {
         await m.react('\u23f3');
 
         const isUrl = /^https?:\/\//i.test(query);
+        const isYouTube = /youtu\.?be|youtube\.com/i.test(query);
         let result = null;
         let source = '';
 
         try {
-          // 1) Direct YouTube/other link -> yt-dlp straight away.
-          if (isUrl) {
-            result = await ytdlp.downloadAudio(query, { bitrate: '128' });
-            source = 'YouTube';
-          } else {
-            // 2) Free-text search -> JioSaavn first (permanent, no cookies, 320kbps).
-            const saavn = require('../lib/saavn');
-            const sres = await saavn.downloadSong(query, { limit: 8 });
-            if (sres.ok) {
-              result = sres;
-              source = 'JioSaavn';
-            } else {
-              // 3) Fallback to yt-dlp (works while cookies are valid).
+          // YouTube link → read the real title via oEmbed, then search every
+          // source by that title. YouTube media itself is IP-blocked, but the
+          // title is all we need to fetch the same song elsewhere.
+          if (isUrl && isYouTube) {
+            const title = await youtubeTitleFromUrl(query);
+            const candidates = title
+              ? [cleanSongQuery(title), title].filter(Boolean)
+              : [];
+            for (const q of candidates) {
+              result = await resolveSong(q);
+              if (result && result.ok) { source = result.source === 'soundcloud' ? 'SoundCloud' : (result.source === 'jiosaavn' ? 'JioSaavn' : 'YouTube'); break; }
+            }
+            if (!result || !result.ok) {
               result = await ytdlp.downloadAudio(query, { bitrate: '128' });
               source = 'YouTube';
             }
+          } else if (isUrl) {
+            // Non-YouTube direct link → yt-dlp.
+            result = await ytdlp.downloadAudio(query, { bitrate: '128' });
+            source = 'YouTube';
+          } else {
+            // Free-text search → JioSaavn, then SoundCloud, then yt-dlp.
+            result = await resolveSong(query);
+            source = result && result.source === 'soundcloud'
+              ? 'SoundCloud'
+              : (result && result.source === 'jiosaavn' ? 'JioSaavn' : 'YouTube');
           }
 
           if (!result || !result.ok) {
             await m.react('\u274c');
-            return m.reply(`\u274c *Could not find that song.*\n\nPlease check the spelling or try another name.`);
+            const reason = result && result.error ? `\n\n_Reason: ${String(result.error).slice(0, 180)}_` : '';
+            return m.reply(`\u274c *Could not find that song.*${reason}\n\nTry a different spelling or send a song name instead of a link.`);
           }
 
           const sizeMB = (fs.statSync(result.file).size / (1024 * 1024)).toFixed(2);
@@ -243,11 +340,17 @@ module.exports = {
             ptt: false
           }, { quoted: m });
 
+          await m.reply(
+            `\ud83c\udfb5 *${result.title || 'Song'}*` +
+            (result.artist ? `\n\ud83d\udc64 ${result.artist}` : '') +
+            `\n\ud83d\udce6 ${sizeMB} MB \u00b7 \u26a1 ${source}`
+          );
+
           await m.react('\ud83c\udfb5');
           console.log(`\ud83c\udfb5 .song "${result.title}" via ${source} (${sizeMB} MB)`);
         } catch (e) {
           await m.react('\u274c');
-          await m.reply('\u26a0\ufe0f *Something went wrong while fetching this song.*\n\nPlease report this to the owner so it can be fixed.');
+          await m.reply(`\u26a0\ufe0f *Something went wrong while fetching this song.*\n\n${String(e && e.message ? e.message : e).slice(0, 180)}`);
         } finally {
           if (result && result.dir) {
             try { require('../lib/saavn').cleanupDir(result.dir); } catch (_) {}

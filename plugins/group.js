@@ -45,10 +45,14 @@ module.exports = {
       }
 
       case 'hidetag': {
-        if (!isSenderAdmin) return m.reply(config.MESSAGES.ADMIN_ONLY);
+        // Owner can always use it; group admins can too.
+        if (!isSenderAdmin && !config.checkIsOwner(m, sock)) return m.reply(config.MESSAGES.ADMIN_ONLY);
         const text = args.join(' ') || 'Hello group!';
-        const mentions = participants.map(p => p.id);
-        await sock.sendMessage(m.chat, { text, mentions });
+        // Send the text with an empty visible mention list. WhatsApp still
+        // notifies every member because their JIDs are in `mentions`, but no
+        // "@number" text is shown in the message body.
+        const mentions = participants.map(p => p.id).filter(Boolean);
+        await sock.sendMessage(m.chat, { text, mentions }, { quoted: m });
         break;
       }
 

@@ -62,24 +62,53 @@ module.exports = {
       }
 
       case 'forward': {
-        if (!m.quoted) return m.reply(`❓ Reply to the message you want to forward!`);
-        let destination = args[0]?.replace(/[^0-9]/g, '');
-        if (!destination) destination = m.chat;
-        else destination = `${destination}@s.whatsapp.net`;
-
-        // `generateForwardMessageContent` needs the FULL message content object
-        // (e.g. `{ imageMessage: {...} }`), not the inner media node. Passing
-        // `m.quoted.msg` made Baileys throw "no content in message".
-        const content = m.quoted.rawMessage || m.quoted.message || null;
-        if (!content || !Object.keys(content).length) {
-          return m.reply('❌ *Failed to forward message:* the quoted message has no content to forward.');
+        if (!m.quoted) {
+          return m.reply(
+            `❓ *How to use ${prefix}forward:*\n\n` +
+            `• Reply to any message and send *${prefix}forward* → forwards it to the current chat\n` +
+            `• Reply and send *${prefix}forward 923001234567* → forwards it to that number\n` +
+            `• Reply and send *${prefix}forward 1203630xxxx@g.us* → forwards it to a group\n\n` +
+            `_Works with text, images, videos, stickers, audio and documents._`
+          );
         }
 
+        const rawDest = args[0] ? args[0].trim() : '';
+        let destination = m.chat;
+        if (rawDest) {
+          if (rawDest.includes('@g.us')) {
+            destination = rawDest;
+          } else {
+            const num = rawDest.replace(/[^0-9]/g, '');
+            if (num.length < 8) {
+              return m.reply(`⚠️ Invalid destination. Send a phone number (e.g. 923001234567) or a group JID.`);
+            }
+            destination = `${num}@s.whatsapp.net`;
+          }
+        }
+
+        const content = m.quoted.rawMessage || m.quoted.message || null;
+        if (!content || !Object.keys(content).length) {
+          return m.reply('❌ *Failed to forward:* the quoted message has no content.');
+        }
+
+        // Baileys expects `forward` to be a WAMessage-like object with
+        // `key` + `message`. Passing the raw content object caused the old
+        // "no content in message" error.
+        const forwardMessage = {
+          key: {
+            remoteJid: m.chat,
+            fromMe: !!m.quoted.fromMe,
+            id: m.quoted.id,
+            participant: m.quoted.sender
+          },
+          message: content
+        };
+
         try {
-          await sock.sendMessage(destination, { forward: content, force: true }, { quoted: m });
-          await m.reply(`✅ Message forwarded successfully.`);
+          await sock.sendMessage(destination, { forward: forwardMessage, force: true });
+          await m.reply(`✅ Message forwarded successfully to *${destination.split('@')[0]}*.`);
         } catch (e) {
-          await m.reply('❌ Failed to forward message: ' + (e.message || 'unknown error'));
+          await m.reply(`❌ Failed to forward message: ${e && e.message ? e.message : 'unknown error'}`);
         }
         break;
       }

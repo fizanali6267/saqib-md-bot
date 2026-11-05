@@ -34,24 +34,38 @@ module.exports = {
       if (m.quoted && (isViewOnce || isMedia)) {
         try {
           await m.react('⏳');
-          let buffer;
-          try {
-            buffer = await m.quoted.download();
-          } catch (firstErr) {
-            // Fallback: some clients deliver the payload without the wrapper.
-            const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-            buffer = await downloadMediaMessage(
-              {
-                key: {
-                  remoteJid: m.chat,
-                  id: m.quoted.id,
-                  participant: m.quoted.senderLid || m.quoted.sender,
-                },
-                message: raw,
-              },
-              'buffer',
-              {}
-            );
+          let buffer = null;
+          // Prefer the buffer cached when the view-once message first arrived.
+          // WhatsApp deletes the mediaKey after viewing, so a later download
+          // fails with "Cannot derive from empty media key".
+          const cachedVO = require('../lib/viewOnceCache').get(m.quoted.id);
+          if (cachedVO && cachedVO.buffer && cachedVO.buffer.length) {
+            buffer = cachedVO.buffer;
+          } else {
+            try {
+              buffer = await m.quoted.download();
+            } catch (firstErr) {
+              // Fallback: some clients deliver the payload without the wrapper.
+              try {
+                const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+                buffer = await downloadMediaMessage(
+                  {
+                    key: {
+                      remoteJid: m.chat,
+                      id: m.quoted.id,
+                      participant: m.quoted.senderLid || m.quoted.sender,
+                    },
+                    message: raw,
+                  },
+                  'buffer',
+                  {}
+                );
+              } catch (secondErr) {
+                const again = require('../lib/viewOnceCache').get(m.quoted.id);
+                if (again) buffer = again.buffer;
+                else throw secondErr;
+              }
+            }
           }
           if (!buffer || !buffer.length) throw new Error('media download returned no data');
 
