@@ -137,7 +137,19 @@ module.exports.checkIsOwner = checkIsOwner;
 // .env defaults. From the user's side the command "turned on" but the feature
 // stopped working. We now persist them to data/settings.json and reload on boot.
 const path = require('path');
-const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
+// Prefer a persistent location when available. On Railway the volume is
+// mounted at /app/session, so runtime toggles survive redeploys instead of
+// silently reverting to .env defaults.
+const SETTINGS_FILE = (() => {
+  if (process.env.SETTINGS_FILE) return process.env.SETTINGS_FILE;
+  const volumeDir = path.join(__dirname, 'session');
+  try {
+    if (fs.existsSync(volumeDir) && fs.statSync(volumeDir).isDirectory()) {
+      return path.join(volumeDir, 'settings.json');
+    }
+  } catch (_) {}
+  return path.join(__dirname, 'data', 'settings.json');
+})();
 const PERSISTED_KEYS = [
   'PREFIX', 'WORK_TYPE',
   'AUTO_REACT', 'AUTO_REACT_MODE', 'AI_REACT',
