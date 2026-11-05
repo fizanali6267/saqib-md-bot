@@ -1088,6 +1088,17 @@ async function startBot(sessionId = DEFAULT_SESSION_ID) {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     return sessionContext.runWithSession(sessionCtx, async () => {
     inst.lastActivityAt = Date.now();
+    // RAW TRACE: proves whether WhatsApp delivers anything at all (esp. in
+    // "Message Yourself"). Never throws, never affects behaviour.
+    try {
+      const first = messages && messages[0];
+      if (first) {
+        const b = first.message?.conversation
+          || first.message?.extendedTextMessage?.text
+          || Object.keys(first.message || {})[0] || '';
+        console.log(`📥 UPSERT type=${type} jid=${first.key?.remoteJid} fromMe=${first.key?.fromMe} part=${first.key?.participant || '-'} body=${String(b).slice(0, 60)}`);
+      }
+    } catch (_) {}
     // CRITICAL FIX: "Message Yourself" (apne inbox) ke messages WhatsApp
     // `type: 'append'` ke saath bhejta hai, groups/DM `type: 'notify'`.
     // Pehle sirf 'notify' allow tha, is liye self-chat mein koi command
@@ -1098,7 +1109,10 @@ async function startBot(sessionId = DEFAULT_SESSION_ID) {
       if (!rawMsg.message) continue;
 
       // Loop protection: ignore anything the bot itself just sent.
-      if (rawMsg.key?.id && botSentMessageIds.has(rawMsg.key.id)) continue;
+      if (rawMsg.key?.id && botSentMessageIds.has(rawMsg.key.id)) {
+        console.log(`♻️  Skip own bot message ${rawMsg.key.id}`);
+        continue;
+      }
 
       // 'append' also carries offline/stale messages after a reconnect. Only
       // act on recent ones so old commands are never re-executed.
@@ -1113,6 +1127,9 @@ async function startBot(sessionId = DEFAULT_SESSION_ID) {
 
       const __t0 = Date.now();
       const m = serialize(sock, rawMsg);
+      try {
+        console.log(`🧪 SER m.chat=${m.chat} fromMe=${m.fromMe} sender=${m.sender} body="${String(m.body || '').slice(0, 60)}"`);
+      } catch (_) {}
 
       // NOTE: `m.chat` is now always the ORIGINAL remoteJid (which may be a
       // `@lid`). Baileys translates LID -> own-LID correctly on send, so we
