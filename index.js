@@ -365,6 +365,7 @@ app.get('/ytcheck', async (req, res) => {
         whichNode: run1('which node'),
         path: process.env.PATH,
         ytdlpVersion: run1('yt-dlp --version'),
+        ffmpeg: run1('ffmpeg -version 2>&1 | head -1'),
         ejsPip: run1('pip3 show yt-dlp-ejs 2>/dev/null | head -3'),
         potPip: run1('pip3 show bgutil-ytdlp-pot-provider 2>/dev/null | head -3'),
         jscProbe: run1('yt-dlp --js-runtimes node --simulate --verbose "https://www.youtube.com/watch?v=BddP6PYo2gs" 2>&1 | grep -iE "JS runtimes|jsc|Challenge Providers" | head -4')
@@ -391,6 +392,32 @@ app.get('/ytcheck', async (req, res) => {
         if (dr.ok) saavn.cleanupDir(dr.dir);
       } catch (e) {
         out.saavn = { error: e && e.message ? e.message : String(e) };
+      }
+    }
+
+    if (req.query.sc === '1') {
+      try {
+        const soundcloud = require('./lib/soundcloud');
+        const t0 = Date.now();
+        const canon = await soundcloud.canonicalize(q);
+        const sr = await soundcloud.searchTracks(q, 5);
+        const dr = await soundcloud.downloadSong(q, { limit: 10 });
+        out.soundcloud = {
+          canonicalArtist: canon && canon.artists && canon.artists[0],
+          searchOk: sr.ok,
+          searchCount: (sr.results || []).length,
+          top: (sr.results || []).slice(0, 3).map(function (x) { return x.title + ' — ' + x.artist + (x.playable ? '' : ' [DRM]'); }),
+          downloadOk: dr.ok,
+          title: dr.title,
+          artist: dr.artist,
+          quality: dr.quality,
+          bytes: dr.ok && dr.file ? fs.statSync(dr.file).size : 0,
+          ms: Date.now() - t0,
+          error: dr.error
+        };
+        if (dr.ok) soundcloud.cleanupDir(dr.dir);
+      } catch (e) {
+        out.soundcloud = { error: e && e.message ? e.message : String(e) };
       }
     }
 
