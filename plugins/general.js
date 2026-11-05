@@ -32,7 +32,7 @@ module.exports = {
 ⏱️ *Uptime:* ${uptime}
 ⚙️ *Prefix:* ${prefix}
 🌐 *Mode:* ${config.WORK_TYPE.toUpperCase()}
-📊 *Total Commands:* 115+ Active
+📊 *Total Commands:* 120+ Active
 
 ┌─── 🌟 *GENERAL & SYSTEM*
 │ ◦ ${prefix}menu
@@ -108,6 +108,12 @@ module.exports = {
 │ ◦ ${prefix}whoisdomain
 │ ◦ ${prefix}speedtest
 └───────────────
+
+┌─── 🗂️ *SIM & CNIC DATABASE*
+│ ◦ ${prefix}simdetails
+│ ◦ ${prefix}simdata
+│ ◦ ${prefix}cnicinfo
+└──────────────
 
 ┌─── 🛠️ *PROFILE & INTERACTIVE*
 │ ◦ ${prefix}getpp
@@ -223,7 +229,7 @@ module.exports = {
 │ ◦ ${prefix}pair
 └───────────────
 
-💡 *For full syntax and descriptions of all 115+ commands:*
+💡 *For full syntax and descriptions of all 120+ commands:*
 Type *${prefix}commanddetails*
 
 🚀 *Get Your Own Free Saqib-MD Bot:*
@@ -250,7 +256,7 @@ _⚡ Engineered for High-Speed Performance | Powered by Saqib Iqbal_`;
       case 'cmdinfo': {
         const detailsText = `📋 *───「 ${config.BOT_NAME} COMMAND DIRECTORY 」───* 📋
 
-Comprehensive manual of all 115+ commands supported by ${config.BOT_NAME}:
+Comprehensive manual of all 120+ commands supported by ${config.BOT_NAME}:
 
 ━━━━━━━━━━━━━━━━━━━━━
 🌟 *1. GENERAL & SYSTEM*
@@ -427,6 +433,13 @@ Comprehensive manual of all 115+ commands supported by ${config.BOT_NAME}:
 • *${prefix}pair [number]* - Get a pairing code to link the bot on another number.
 
 ━━━━━━━━━━━━━━━━━━━━━
+🗂️ *15. SIM & CNIC DATABASE*
+━━━━━━━━━━━━━━━━━━━
+• *${prefix}simdetails [number/CNIC]* - Full SIM owner database lookup (name, CNIC, address) for an 11-digit number or 13-digit CNIC.
+• *${prefix}simdata* - Alias of simdetails.
+• *${prefix}cnicinfo* - Alias of simdetails.
+
+━━━━━━━━━━━━━━━━━━━
 🚀 *Deploy your own free bot here:*
 🔗 ${config.PAIRING_LINK}
 
