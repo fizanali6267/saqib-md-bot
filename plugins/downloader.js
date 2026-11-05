@@ -92,6 +92,93 @@ async function tikwmLookup(url) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// TikTok: read the public video page and reuse its ttwid cookie.
+// Cloudflare-fronted mirrors (tikwm, snaptik, ...) 403 every datacenter IP,
+// but tiktok.com itself serves the page and the CDN accepts the same cookie.
+// ---------------------------------------------------------------------------
+function pickCookie(setCookie) {
+  if (!setCookie) return '';
+  const arr = Array.isArray(setCookie) ? setCookie : [setCookie];
+  return arr.map((c) => String(c).split(';')[0]).filter(Boolean).join('; ');
+}
+
+function parseUniversal(html) {
+  const m = /id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch (_) { return null; }
+}
+
+async function tiktokWeb(url) {
+  const page = await axios.get(url, {
+    timeout: 25000,
+    maxRedirects: 5,
+    headers: {
+      'User-Agent': UA,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+    validateStatus: () => true,
+  });
+  if (page.status !== 200 || typeof page.data !== 'string') {
+    throw new Error('TikTok page returned HTTP ' + page.status);
+  }
+  const data = parseUniversal(page.data);
+  const scope = data && data.__DEFAULT_SCOPE__;
+  const detail = scope && (scope['webapp.video-detail'] || scope['webapp.video-detail-v2']);
+  const item = detail && detail.itemInfo && detail.itemInfo.itemStruct;
+  if (!item) {
+    const statusMsg = detail && detail.statusMsg;
+    throw new Error(statusMsg ? 'TikTok says: ' + statusMsg : 'Could not read this TikTok post');
+  }
+
+  const cookie = pickCookie(page.headers['set-cookie']);
+  const dl = (u) => axios.get(u, {
+    responseType: 'arraybuffer',
+    timeout: 90000,
+    maxRedirects: 5,
+    headers: { 'User-Agent': UA, Referer: 'https://www.tiktok.com/', Cookie: cookie, Accept: '*/*' },
+  });
+
+  const title = String(item.desc || 'TikTok video').slice(0, 120);
+  const author = (item.author && item.author.uniqueId) || 'tiktok';
+
+  // Photo/slideshow post
+  const imgs = item.imagePost && item.imagePost.images;
+  if (Array.isArray(imgs) && imgs.length) {
+    const urls = imgs.map((im) => {
+      const list = (im.imageURL && im.imageURL.urlList) || [];
+      return list[list.length - 1] || list[0];
+    }).filter(Boolean);
+    const buffers = [];
+    for (const u of urls.slice(0, 10)) {
+      try { buffers.push(Buffer.from((await dl(u)).data)); } catch (_) {}
+    }
+    if (buffers.length) return { kind: 'images', title, author, images: buffers };
+  }
+
+  // Video: prefer the highest bitrate entry, fall back to playAddr
+  const video = item.video || {};
+  const candidates = [];
+  for (const br of (video.bitrateInfo || [])) {
+    const u = br && br.PlayAddr && br.PlayAddr.UrlList && br.PlayAddr.UrlList[0];
+    if (u) candidates.push(u);
+  }
+  if (video.playAddr) candidates.push(video.playAddr);
+  if (video.downloadAddr) candidates.push(video.downloadAddr);
+
+  let lastErr = null;
+  for (const u of candidates) {
+    try {
+      const r = await dl(u);
+      const buf = Buffer.from(r.data);
+      if (buf.length > 20000) return { kind: 'video', title, author, buffer: buf };
+      lastErr = new Error('empty video body');
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error(lastErr ? lastErr.message : 'No downloadable video URL');
+}
+
 function humanSize(bytes) {
   if (!bytes) return 'N/A';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -105,7 +192,7 @@ function humanSize(bytes) {
 }
 
 module.exports = {
-  _internal: { youtubeSearch, aptoideLookup, tikwmLookup, humanSize },
+  _internal: { youtubeSearch, aptoideLookup, tikwmLookup, tiktokWeb, humanSize },
   name: 'downloader',
   commands: ['song', 'ytmp3', 'play', 'video', 'ytmp4', 'yts', 'tiktok', 'tt', 'fb', 'facebook', 'ig', 'insta', 'apk', 'mediafire'],
   execute: async (sock, m, { command, args, prefix }) => {
@@ -227,7 +314,29 @@ module.exports = {
         }
         await m.react('⏳');
 
-        // 1) tikwm — fast, no-watermark, no auth.
+        // 1) Native page scrape (works from datacenter IPs where mirrors 403).
+        try {
+          const native = await tiktokWeb(query);
+          if (native.kind === 'images') {
+            for (const img of native.images) {
+              await sock.sendMessage(m.chat, { image: img, caption: `🎵 *${native.title}*` }, { quoted: m });
+            }
+            await m.react('✅');
+            return;
+          }
+          await sock.sendMessage(m.chat, {
+            video: native.buffer,
+            mimetype: 'video/mp4',
+            fileName: 'tiktok.mp4',
+            caption: `🎵 *${native.title}*\n👤 @${native.author}\n⚡ _Downloaded via Saqib-MD_`,
+          }, { quoted: m });
+          await m.react('✅');
+          return;
+        } catch (_) {
+          // fall through to mirrors
+        }
+
+        // 2) tikwm — fast, no-watermark, no auth.
         try {
           const info = await tikwmLookup(query);
           if (info) {
@@ -259,7 +368,7 @@ module.exports = {
           // fall through to yt-dlp
         }
 
-        // 2) yt-dlp fallback
+        // 3) yt-dlp fallback
         let result = null;
         try {
           result = await ytdlp.downloadVideo(query, { height: 720 });
