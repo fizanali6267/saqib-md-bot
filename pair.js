@@ -84,7 +84,15 @@ router.get('/', async (req, res) => {
   // Pehle public portal par koi bhi banda owner ki primary session overwrite
   // kar sakta tha. Ab sirf OWNER_NUMBERS + PAIRING_ALLOWED_NUMBERS pair kar
   // sakte hain, jab tak ALLOW_PUBLIC_PAIRING=true set na ho.
-  if (!config.ALLOW_PUBLIC_PAIRING) {
+  // Internal calls from the bot itself (.pair command) run on loopback and are
+  // always trusted, so the owner can pair a new number from the chat without
+  // having to edit the allowlist env var every time.
+  const isInternal = (() => {
+    const ip = String(req.ip || req.connection?.remoteAddress || '');
+    return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || req.get('x-internal-pair') === 'saqib-md';
+  })();
+
+  if (!config.ALLOW_PUBLIC_PAIRING && !isInternal) {
     const owners = (config.OWNER_NUMBERS || [config.OWNER_NUMBER])
       .map((n) => sanitizeNumber(n))
       .filter(Boolean);

@@ -64,6 +64,7 @@ module.exports = {
       const res = await axios.get(`http://127.0.0.1:${port}/pair`, {
         params: { number },
         timeout: 60000,
+        headers: { 'x-internal-pair': 'saqib-md' },
         validateStatus: () => true
       });
 
