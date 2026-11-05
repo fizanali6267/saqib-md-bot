@@ -137,6 +137,27 @@ app.get('/health', (req, res) => {
 
 // Live diagnostics: proves the socket can actually deliver to a given JID.
 // Usage: /selftest?jid=92300...  (defaults to the owner's own number)
+// Owner-only: dump the live toggle state so the defaults can be verified
+// without opening WhatsApp. Usage: /settings?key=<owner number>
+app.get('/settings', (req, res) => {
+  try {
+    const key = String(req.query.key || '').replace(/[^0-9]/g, '');
+    const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+    if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
+    const keys = [
+      'ALWAYS_ONLINE', 'AUTO_READ', 'AUTO_REACT', 'AUTO_REACT_MODE', 'AI_REACT',
+      'ANTI_DELETE', 'ANTI_DELETE_MODE', 'ANTI_VIEW_ONCE', 'AUTO_VIEW_ONCE',
+      'AUTO_STATUS_READ', 'AUTO_STATUS_REACT', 'ANTI_LINK', 'ANTI_BADWORD',
+      'ANTI_CALL', 'AUTO_BIO', 'CHATBOT_PM', 'CHATBOT_GROUP', 'WORK_TYPE', 'PREFIX'
+    ];
+    const out = {};
+    for (const k of keys) out[k] = config[k];
+    res.json({ ok: true, settings: out });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/selftest', async (req, res) => {
   try {
     if (!currentSock) return res.status(503).json({ ok: false, error: 'socket not connected' });
