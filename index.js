@@ -192,6 +192,20 @@ app.get('/ytcheck', async (req, res) => {
       });
     } catch (e) { out.potPing = { error: e.message }; }
 
+    if (req.query.env === '1') {
+      const { execSync } = require('child_process');
+      const run1 = (cmd) => { try { return execSync(cmd, { encoding: 'utf8', timeout: 15000 }).toString().trim().slice(0, 800); } catch (e) { return 'ERR: ' + (e.message || e).slice(0, 200); } };
+      out.env = {
+        nodeVersion: run1('node --version'),
+        whichNode: run1('which node'),
+        path: process.env.PATH,
+        ytdlpVersion: run1('yt-dlp --version'),
+        ejsPip: run1('pip3 show yt-dlp-ejs 2>/dev/null | head -3'),
+        potPip: run1('pip3 show bgutil-ytdlp-pot-provider 2>/dev/null | head -3'),
+        jscProbe: run1('yt-dlp --js-runtimes node --simulate --verbose "https://www.youtube.com/watch?v=BddP6PYo2gs" 2>&1 | grep -iE "JS runtimes|jsc|Challenge Providers" | head -4')
+      };
+    }
+
     if (req.query.dl === '1') {
       const t0 = Date.now();
       const r = await ytdlp.downloadAudio(q, { bitrate: '128' });
