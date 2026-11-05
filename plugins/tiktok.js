@@ -14,8 +14,42 @@ const config = require('../config');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-const PROVIDERS = [
-  {
+const PROVIDERS = [  {
+    // Works when /api/feed/search is Cloudflare-blocked (which is almost always
+    // from datacenter IPs). We resolve the keyword to a TikTok hashtag id and
+    // then pull that hashtag's real video feed. Same host, different path, so
+    // it survives the challenge that kills the search endpoint.
+    name: 'tikwm-challenge',
+    search: async (q, count) => {
+      const keyword = String(q).trim().replace(/^#/, '').replace(/\s+/g, '');
+      const info = await axios.get('https://tikwm.com/api/challenge/info', {
+        params: { challenge_name: keyword },
+        timeout: 12000,
+        headers: { 'User-Agent': UA, Accept: 'application/json' }
+      });
+      const id = info.data && info.data.data && info.data.data.id;
+      if (!id) throw new Error('no challenge id');
+
+      const posts = await axios.get('https://tikwm.com/api/challenge/posts', {
+        params: { challenge_id: id, count: Math.max(Number(count) || 10, 10) },
+        timeout: 15000,
+        headers: { 'User-Agent': UA, Accept: 'application/json', Referer: 'https://tikwm.com/' }
+      });
+      const list = posts.data && posts.data.data && posts.data.data.videos;
+      if (!Array.isArray(list) || !list.length) throw new Error('empty');
+
+      return list.slice(0, count).map((v) => ({
+        id: v.video_id,
+        title: v.title || 'TikTok video',
+        author: (v.author && (v.author.unique_id || v.author.nickname)) || 'tiktok',
+        plays: v.play_count,
+        likes: v.digg_count,
+        duration: v.duration,
+        cover: v.origin_cover || v.cover,
+        url: `https://www.tiktok.com/@${(v.author && v.author.unique_id) || 'user'}/video/${v.video_id}`
+      }));
+    }
+  },  {
     name: 'tikwm',
     search: async (q, count) => {
       const res = await axios.get('https://www.tikwm.com/api/feed/search', {
@@ -51,8 +85,31 @@ const PROVIDERS = [
         author: d.author?.unique_id || 'unknown'
       };
     }
-  },
-  {
+  },  {
+    // Last-resort real feed: trending videos for the requested region (PK).
+    // Not keyword-filtered, but it is genuine live TikTok data instead of an
+    // error, so the command always returns something useful.
+    name: 'tikwm-region',
+    search: async (q, count) => {
+      const res = await axios.get('https://tikwm.com/api/feed/list', {
+        params: { region: 'PK', count: Math.max(Number(count) || 10, 10) },
+        timeout: 15000,
+        headers: { 'User-Agent': UA, Accept: 'application/json' }
+      });
+      const list = res.data && res.data.data;
+      if (!Array.isArray(list) || !list.length) throw new Error('empty');
+      return list.slice(0, count).map((v) => ({
+        id: v.video_id,
+        title: v.title || 'TikTok video',
+        author: (v.author && (v.author.unique_id || v.author.nickname)) || 'tiktok',
+        plays: v.play_count,
+        likes: v.digg_count,
+        duration: v.duration,
+        cover: v.origin_cover || v.cover,
+        url: `https://www.tiktok.com/@${(v.author && v.author.unique_id) || 'user'}/video/${v.video_id}`
+      }));
+    }
+  },  {
     name: 'tiklydown',
     search: async (q, count) => {
       const res = await axios.get('https://api.tiklydown.eu.org/api/search', {
@@ -196,9 +253,14 @@ module.exports = {
 
     await m.react('✅').catch(() => null);
 
+    const note = res.provider === 'tikwm-region'
+      ? 'ℹ️ _No exact matches for that keyword, so here are trending videos in Pakistan._\n\n'
+      : '';
+
     return m.reply(
       `🎬 *TIKTOK SEARCH — "${input}"*\n` +
       `🇵🇰 _Region: Pakistan_\n\n` +
+      note +
       lines.join('\n\n') +
       `\n\n💡 Download any video with *${prefix}ttdl <link>*`
     );

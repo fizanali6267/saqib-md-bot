@@ -38,25 +38,25 @@ module.exports = {
   SESSION_ID: process.env.SESSION_ID || "saqib_md_session",
 
   // Granular Anti-Delete Settings (Fixed boolean parsing)
-  ANTI_DELETE: parseBool(process.env.ANTI_DELETE, true),
+  ANTI_DELETE: parseBool(process.env.ANTI_DELETE, false),
   ANTI_DELETE_MODE: process.env.ANTI_DELETE_MODE || "same", // 'same' (same chat) or 'inbox' (owner PM)
 
   // Anti-View-Once & Auto-VV Settings (Fixed boolean parsing)
-  ANTI_VIEW_ONCE: parseBool(process.env.ANTI_VIEW_ONCE, true), // Manual & Quoted .vv
-  AUTO_VIEW_ONCE: parseBool(process.env.AUTO_VIEW_ONCE, true), // Auto-recovers incoming view once to personal inbox
+  ANTI_VIEW_ONCE: parseBool(process.env.ANTI_VIEW_ONCE, false), // Manual & Quoted .vv
+  AUTO_VIEW_ONCE: parseBool(process.env.AUTO_VIEW_ONCE, false), // Auto-recovers incoming view once to personal inbox
 
   // Automation & Presence Features
   ALWAYS_ONLINE: parseBool(process.env.ALWAYS_ONLINE, true),
   AUTO_READ: parseBool(process.env.AUTO_READ, false), // Blue tick automation
-  AUTO_REACT: parseBool(process.env.AUTO_REACT, true),
+  AUTO_REACT: parseBool(process.env.AUTO_REACT, false),
   AUTO_REACT_MODE: process.env.AUTO_REACT_MODE || "sender", // 'sender', 'all', 'me', 'mirror'
   AI_REACT: parseBool(process.env.AI_REACT, false), // Smart sentiment reaction
-  AUTO_STATUS_READ: parseBool(process.env.AUTO_STATUS_READ, true),
-  AUTO_STATUS_REACT: parseBool(process.env.AUTO_STATUS_REACT, true),
+  AUTO_STATUS_READ: parseBool(process.env.AUTO_STATUS_READ, false),
+  AUTO_STATUS_REACT: parseBool(process.env.AUTO_STATUS_REACT, false),
   STATUS_REACT_EMOJI: process.env.STATUS_REACT_EMOJI || "❤️",
 
   // Granular Chatbot Settings (Friendly, human-like AI)
-  CHATBOT_PM: parseBool(process.env.CHATBOT_PM, true), // Active in Private DM
+  CHATBOT_PM: parseBool(process.env.CHATBOT_PM, false), // Active in Private DM
   CHATBOT_GROUP: parseBool(process.env.CHATBOT_GROUP, false), // Active in Groups
 
   // Issue 7 Fix: single-session bot hai, is liye public pairing se koi bhi
@@ -73,8 +73,8 @@ module.exports = {
     .filter(Boolean),
 
   // Other Security Features (Fixed boolean parsing)
-  ANTI_LINK: parseBool(process.env.ANTI_LINK, true),
-  ANTI_BADWORD: parseBool(process.env.ANTI_BADWORD, true),
+  ANTI_LINK: parseBool(process.env.ANTI_LINK, false),
+  ANTI_BADWORD: parseBool(process.env.ANTI_BADWORD, false),
   ANTI_CALL: parseBool(process.env.ANTI_CALL, false),
   AUTO_BIO: parseBool(process.env.AUTO_BIO, false),
 
@@ -161,10 +161,20 @@ const PERSISTED_KEYS = [
   'CHATBOT_PM', 'CHATBOT_GROUP'
 ];
 
+// Bump this whenever the factory defaults change. A settings.json written by an
+// older version is then ignored once, so the bot really starts from the new
+// defaults instead of silently keeping stale toggles from a previous deploy.
+const SETTINGS_VERSION = 2;
+
 const loadSettings = () => {
   try {
     const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
     const saved = JSON.parse(raw);
+    if (saved.__v !== SETTINGS_VERSION) {
+      console.log('\u2699\ufe0f  Settings version changed \u2014 resetting to factory defaults.');
+      try { fs.unlinkSync(SETTINGS_FILE); } catch (_) {}
+      return;
+    }
     let applied = 0;
     for (const k of PERSISTED_KEYS) {
       if (Object.prototype.hasOwnProperty.call(saved, k)) {
@@ -179,7 +189,7 @@ const loadSettings = () => {
 let __lastSettingsJson = null;
 const persistSettings = () => {
   try {
-    const out = {};
+    const out = { __v: SETTINGS_VERSION };
     for (const k of PERSISTED_KEYS) out[k] = module.exports[k];
     const json = JSON.stringify(out, null, 2);
     if (json === __lastSettingsJson) return true; // nothing changed — no disk IO

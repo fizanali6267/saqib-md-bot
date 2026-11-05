@@ -2,7 +2,7 @@ const config = require('../config');
 
 module.exports = {
   name: 'security',
-  commands: ['antidelete', 'antiviewonce', 'autovv', 'vv', 'vv2', 'vvinbox', 'autoreact', 'autostatus', 'autobio', 'antibadword', 'anticall', 'aireact', 'alwaysonline', 'autoread', 'bluetick'],
+  commands: ['antidelete', 'antiviewonce', 'autovv', 'vv', 'vv2', 'vvinbox', 'autoreact', 'autostatus', 'autobio', 'antibadword', 'anticall', 'aireact', 'alwaysonline', 'online', 'autoread', 'bluetick'],
   execute: async (sock, m, { command, args, prefix }) => {
     // Handling .vv and .vv2 (Can be executed by owner or user if public)
     if (command === 'vv' || command === 'vv2' || command === 'vvinbox') {
@@ -80,7 +80,7 @@ module.exports = {
           await sock.sendPresenceUpdate('unavailable');
           await m.reply(`⚪ *Always Online DEACTIVATED.* Normal presence restored.`);
         } else {
-          await m.reply(`Current Status: *${config.ALWAYS_ONLINE ? 'ALWAYS ONLINE 🟢' : 'NORMAL ⚪'}*\nUsage: *${prefix}alwaysonline on* or *${prefix}alwaysonline off*`);
+          await m.reply(`Current Status: *${config.ALWAYS_ONLINE ? 'ALWAYS ONLINE 🟢' : 'NORMAL ⚪'}*\nUsage: *${prefix}online on* or *${prefix}online off*`);
         }
         break;
       }

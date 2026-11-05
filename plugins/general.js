@@ -51,7 +51,7 @@ module.exports = {
 │ ◦ ${prefix}vv2
 │ ◦ ${prefix}autovv
 │ ◦ ${prefix}save
-│ ◦ ${prefix}alwaysonline
+│ ◦ ${prefix}online
 │ ◦ ${prefix}bluetick
 │ ◦ ${prefix}autoreact
 │ ◦ ${prefix}aireact
@@ -272,7 +272,7 @@ Comprehensive manual of all 115+ commands supported by ${config.BOT_NAME}:
 • *${prefix}vv2* - Secretly delivers unlocked View-Once media to your personal DM.
 • *${prefix}autovv on / off* - Auto-saves incoming View-Once media straight to your inbox.
 • *${prefix}save* - Reply to any WhatsApp status to get clean media sent directly to your DM! (Also triggers automatically on status reply).
-• *${prefix}alwaysonline on / off* - Keeps presence as "Available" 24/7.
+• *${prefix}online on / off* - Keeps presence as "Available" 24/7.
 • *${prefix}bluetick on / off* - Toggles automatic blue read receipts vs double grey ticks.
 • *${prefix}autoreact all / sender / me / mirror / off* - Automated message reaction modes.
 • *${prefix}aireact on / off* - AI sentiment analysis emoji reactions.
