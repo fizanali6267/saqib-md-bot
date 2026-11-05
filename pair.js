@@ -19,6 +19,7 @@ const { useMongoDBAuthState, promoteSession, deleteSession, clearSignalSessions,
 const activePairSockets = new Map();
 const activeSocketTimeouts = new Map();
 const pairingStatusMap = new Map();
+const pairReadyWaiters = new Map(); // number -> resolve() once the socket is ready
 const rateLimitLog = new Map(); // IP/Number -> timestamp[]
 
 // Rate limiting middleware: max 2 requests/min per IP, max 1 request/45s per phone
@@ -178,12 +179,17 @@ router.get('/', async (req, res) => {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.ubuntu('Chrome'),
+        // WhatsApp rejects some Ubuntu/Chrome signatures for phone-number
+        // linking. macOS Desktop is the combination their servers accept most
+        // reliably, and it is what avoids "Could not link device".
+        browser: Browsers.macOS('Desktop'),
         syncFullHistory: false,
+        markOnlineOnConnect: false,
         connectTimeoutMs: 90000,
         defaultQueryTimeoutMs: 90000,
-        keepAliveIntervalMs: 15000,
-        generateHighQualityLinkPreview: false
+        keepAliveIntervalMs: 20000,
+        generateHighQualityLinkPreview: false,
+        retryRequestDelayMs: 500
       });
 
       activePairSockets.set(num, sock);
@@ -191,7 +197,17 @@ router.get('/', async (req, res) => {
       sock.ev.on('creds.update', saveCreds);
 
       sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        // The pairing code may only be requested AFTER the Noise handshake has
+        // completed. Requesting it too early (the old code used a blind 3.5s
+        // sleep) makes WhatsApp hand out a code that is bound to a socket which
+        // is already being torn down -> "Logging in…" then "Could not link
+        // device". Resolve the waiter as soon as the server talks to us.
+        if (qr || connection === 'connecting' || connection === 'open') {
+          const w = pairReadyWaiters.get(num);
+          if (w) { pairReadyWaiters.delete(num); w(); }
+        }
 
         if (connection === 'open') {
           pairingStatusMap.set(num, 'connected');
@@ -216,6 +232,20 @@ router.get('/', async (req, res) => {
           // share the same Signal session (that caused "Decrypted message with closed session")
           setTimeout(async () => {
             try { closePairSocket(num, 'Pairing completed successfully'); } catch (_) {}
+
+            // CRITICAL: stop the live bot socket BEFORE promoting the new
+            // credentials. The running socket owns the same session document
+            // and rewrites it with its old creds on every `creds.update`, which
+            // invalidates the device WhatsApp has just linked -> the user sees
+            // "Logging in…" followed by "Could not link device".
+            try {
+              const botIndex = require('./index');
+              if (botIndex && typeof botIndex.pauseBot === 'function') {
+                await botIndex.pauseBot('Pausing main bot before promoting new pairing');
+              }
+            } catch (e) {
+              console.log('pauseBot unavailable:', e?.message || e);
+            }
 
             // Promote validated credentials into the primary bot session
             const promoteToLocalSession = () => {
@@ -297,25 +327,64 @@ router.get('/', async (req, res) => {
       return sock;
     }
 
+    // Register the readiness waiter BEFORE the socket is created, so the very
+    // first `connection.update` cannot be missed.
+    const readyPromise = new Promise((resolve) => {
+      pairReadyWaiters.set(num, resolve);
+    });
+
     const sock = launchPairSocket(false);
 
-    // Wait 3.5 seconds for Baileys WebSocket handshake to establish
-    await delay(3500);
+    // Wait until WhatsApp has actually answered the handshake (max 25s).
+    // A blind sleep was the original bug: the code was requested against a
+    // socket that was not ready, so WhatsApp handed out a code bound to a dead
+    // stream and the phone showed "Could not link device".
+    const ready = await Promise.race([
+      readyPromise.then(() => true),
+      delay(25000).then(() => false)
+    ]);
+    pairReadyWaiters.delete(num);
+
+    if (!ready) {
+      closePairSocket(num, 'Handshake timeout');
+      pairingStatusMap.set(num, 'error');
+      return res.status(504).json({
+        status: 'error',
+        message: 'WhatsApp did not respond in time. Please retry in 10 seconds.'
+      });
+    }
 
     if (!state.creds.registered) {
-      const code = await sock.requestPairingCode(num);
+      // Request the code exactly once. A second call invalidates the first
+      // code, which is another way to get "Could not link device".
+      let code;
+      try {
+        code = await sock.requestPairingCode(num);
+      } catch (e) {
+        console.error('requestPairingCode failed:', e?.message || e);
+        closePairSocket(num, 'requestPairingCode failed');
+        pairingStatusMap.set(num, 'error');
+        return res.status(502).json({
+          status: 'error',
+          message: 'WhatsApp refused the pairing request. Please wait 30 seconds and try again.'
+        });
+      }
       const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
       pairingStatusMap.set(num, 'code_generated');
 
-      // Safely close socket and free memory after 150 seconds timeout
+      // Keep the socket alive long enough for the user to actually type the
+      // code. 150s was too short (open WhatsApp + navigate + type) and killing
+      // the socket mid-link is exactly what produces "Could not link device".
       const timeoutId = setTimeout(() => {
+        const st = pairingStatusMap.get(num);
+        if (st === 'connected' || st === 'connecting') return; // let it finish
         console.log(`⏱️ Pairing socket timed out for ${num}. Closing socket safely.`);
-        closePairSocket(num, 'Pairing timeout after 150 seconds');
+        closePairSocket(num, 'Pairing timeout');
         if (usingMongoForPair) deleteSession(tempSessionId);
         else {
           try { fs.rmSync(tempSessionDir, { recursive: true, force: true }); } catch (_) {}
         }
-      }, 150000);
+      }, 300000);
 
       activeSocketTimeouts.set(num, timeoutId);
 
@@ -323,8 +392,8 @@ router.get('/', async (req, res) => {
         status: 'success',
         code: formattedCode,
         number: num,
-        expiresIn: 150,
-        message: 'Notification dispatched! Enter this 8-digit code in WhatsApp > Linked Devices > Link with phone number.'
+        expiresIn: 300,
+        message: 'Code ready. Enter it in WhatsApp > Linked Devices > Link with phone number. It stays valid for about 2 minutes — type it immediately.'
       });
     } else {
       return res.json({

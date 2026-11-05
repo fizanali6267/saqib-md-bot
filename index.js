@@ -650,6 +650,14 @@ async function startBot() {
   }
 
   const { state, saveCreds } = authState;
+  // When a NEW device is being paired, the freshly promoted credentials live in
+  // the SAME session document this socket writes to. If this socket keeps
+  // saving its old creds it silently overwrites the new device's keys and
+  // WhatsApp answers "Could not link device". pauseBot() sets this flag.
+  const guardedSaveCreds = async () => {
+    if (global.__SAQIB_PAUSED) return;
+    try { await saveCreds(); } catch (_) {}
+  };
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
 
   // Official Baileys fix: wrap the Signal key store in a cacheable layer so the
@@ -826,7 +834,7 @@ async function startBot() {
     return sent;
   };
 
-  sock.ev.on('creds.update', () => { lastActivityAt = Date.now(); try { saveCreds(); } catch (_) {} });
+  sock.ev.on('creds.update', () => { lastActivityAt = Date.now(); guardedSaveCreds(); });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
@@ -1379,6 +1387,7 @@ async function startBot() {
 // Issue 5 Fix: reloadBot function to reload main bot connection when new pairing completes
 async function reloadBot() {
   console.log('🔄 Reloading main bot connection with new pairing credentials...');
+  global.__SAQIB_PAUSED = false;
   // Prevent the old socket's close event from triggering a second reconnect.
   suppressReconnectUntil = Date.now() + 8000;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -1395,6 +1404,32 @@ async function reloadBot() {
   await startBot().catch(err => console.error('Bot reload error:', err));
 }
 
+/**
+ * Stop the running bot socket BEFORE a new device's credentials are promoted.
+ *
+ * Why this is required: the pairing flow writes the new creds into the same
+ * session document (`SESSION_ID`) that the live socket owns. A live socket
+ * emits `creds.update` regularly and each save rewrites the document with its
+ * OLD creds — which invalidates the device WhatsApp just linked, producing
+ * "Could not link device" right after "Logging in…".
+ */
+async function pauseBot(reason = 'Pausing for device pairing') {
+  console.log(`⏸️  ${reason}`);
+  global.__SAQIB_PAUSED = true;
+  suppressReconnectUntil = Date.now() + 10 * 60 * 1000;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
+  if (autoBioInterval) clearInterval(autoBioInterval);
+  if (currentSock) {
+    try { currentSock.end(new Error(reason)); } catch (_) {}
+    currentSock = null;
+  }
+  // Let the server release the device slot for this account.
+  await new Promise(r => setTimeout(r, 1200));
+}
+
+module.exports = { startBot, reloadBot, pauseBot, app };
+
 // Start Web Server for Pairing Portal (Binding 0.0.0.0 for external network access)
 app.listen(config.PORT, '0.0.0.0', () => {
   console.log(`🌐 Saqib-MD Pairing Portal & Web Server running on port ${config.PORT}`);
@@ -1405,4 +1440,4 @@ app.listen(config.PORT, '0.0.0.0', () => {
   }
 });
 
-module.exports = { startBot, reloadBot, app };
+module.exports = { startBot, reloadBot, pauseBot, app };
