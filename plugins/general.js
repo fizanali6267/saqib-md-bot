@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const humanizeDuration = require('humanize-duration');
 const config = require('../config');
+const commandInfo = require('../lib/commandInfo');
 
 // Cache the banner once — avoids a synchronous disk read on every .menu call.
 let _bannerCache = null;
@@ -19,7 +20,7 @@ function getBanner() {
 
 module.exports = {
   name: 'general',
-  commands: ['menu', 'help', 'ping', 'speed', 'alive', 'runtime', 'uptime', 'owner', 'system', 'info', 'restart', 'commanddetails', 'commands', 'cmd', 'cmdinfo'],
+  commands: ['menu', 'help', 'ping', 'speed', 'alive', 'runtime', 'uptime', 'owner', 'system', 'info', 'restart', 'commanddetails', 'commands', 'cmd', 'cmdinfo', 'details', 'cmdhelp', 'helpcmd'],
   execute: async (sock, m, { command, args, prefix }) => {
     switch (command) {
       case 'menu':
@@ -446,6 +447,55 @@ Comprehensive manual of all 120+ commands supported by ${config.BOT_NAME}:
 _⚡ Developed exclusively for Saqib Iqbal | Ultra-Fast Architecture_`;
 
         await m.reply(detailsText);
+        break;
+      }
+
+      case 'details':
+      case 'cmdhelp':
+      case 'helpcmd': {
+        const query = args.join(' ').trim();
+        if (!query) {
+          return m.reply(
+            `📖 *COMMAND DETAILS*\n\n` +
+            `Kisi bhi command ki poori tafseel dekhne ke liye:\n` +
+            `*${prefix}details <command>*\n\n` +
+            `Misaal:\n` +
+            `• ${prefix}details song\n` +
+            `• ${prefix}details sticker\n` +
+            `• ${prefix}details hidetag\n\n` +
+            `📚 Total documented commands: *${commandInfo.CATALOG.length + Object.keys(commandInfo.LEGACY).length}*\n` +
+            `🗂️ Categories: *${commandInfo.CATEGORIES.length + 1}*\n\n` +
+            `_Tip: ${prefix}details bina command ke bhi chal sakta hai._`
+          );
+        }
+
+        const info = commandInfo.lookup(query);
+        if (!info.found) {
+          const sug = (info.suggestions || []).length
+            ? `\n\n💡 *Kya aap yeh dhoond rahe thay?*\n` + info.suggestions.map((c) => `• ${prefix}details ${c}`).join('\n')
+            : `\n\n💡 ${prefix}menu se poori list dekh sakte hain.`;
+          return m.reply(`❌ *Command nahi mila:* \`${query}\`${sug}`);
+        }
+
+        const aliasNote = info.aliasOf
+          ? `\n🔗 *Alias of:* ${prefix}${info.aliasOf}`
+          : '';
+        const aliasLine = info.aliases.length
+          ? `\n🔁 *Aliases:* ${info.aliases.slice(0, 14).map((a) => prefix + a).join(', ')}${info.aliases.length > 14 ? ` +${info.aliases.length - 14} more` : ''}`
+          : '';
+
+        const text =
+          `╭─「 📖 *COMMAND DETAILS* 」\n` +
+          `│ 🔹 *Command:* ${prefix}${info.cmd}\n` +
+          `│ 📂 *Category:* ${info.cat}\n` +
+          `│ ⚙️ *Usage:* ${prefix}${info.usage}\n` +
+          `│ 🔐 *Permission:* ${info.permission}${aliasNote}${aliasLine}\n` +
+          `╰──────────────────────\n\n` +
+          `📝 *Full Explanation:*\n${info.desc}\n\n` +
+          `💡 *Example:* ${prefix}${info.usage.split('  (')[0].split(' [')[0]}\n\n` +
+          `_⚡ ${config.BOT_NAME} — Command Help System_`;
+
+        await m.reply(text);
         break;
       }
 

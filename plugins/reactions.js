@@ -90,7 +90,10 @@ const REACTIONS = {
   yes: 'yes',
   no: 'no',
   evillaugh: 'evillaugh',
-  kill: 'smack'
+  kill: 'smack',
+  bonk: 'bonk',
+  think: 'think',
+  sleepy: 'sleep'
 };
 
 // Emoji + caption per reaction. Pure English, friendly, no LID numbers.
@@ -167,7 +170,10 @@ const CAPTIONS = {
   yes: (a, b) => `✅ *Yes!* ${a} agreed with ${b}.`,
   no: (a, b) => `❌ *No!* ${a} refused ${b}.`,
   evillaugh: (a, b) => `😈 *Evil Laugh!* ${a} is laughing wickedly at ${b}!`,
-  kill: (a, b) => `⚔️ *Eliminated!* ${a} dramatically took down ${b}! 💀`
+  kill: (a, b) => `⚔️ *Eliminated!* ${a} dramatically took down ${b}! 💀`,
+  bonk: (a, b) => `🔨 *BONK!* ${a} bonked ${b} on the head! 😵`,
+  think: (a, b) => `🤔 *Hmm...* ${a} is thinking hard about ${b}.`,
+  sleepy: (a, b) => `😴 *So Sleepy...* ${a} is dozing off next to ${b}. 💤`,
 };
 
 const API_HOST = 'https://api.otakugifs.xyz';
