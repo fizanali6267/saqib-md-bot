@@ -1,100 +1,89 @@
 const axios = require('axios');
+const fs = require('fs');
 const config = require('../config');
-
-// High-speed audio stream resolver with fast fallback
-async function getFastAudioStream(query) {
-  const endpoints = [
-    `https://api.giftedtech.my.id/api/download/ytmp3?apikey=gifted&url=${encodeURIComponent(query)}`,
-    `https://api.davidcyriltech.my.id/download/ytmp3?url=${encodeURIComponent(query)}`,
-    `https://api.agatz.xyz/api/ytmp3?url=${encodeURIComponent(query)}`
-  ];
-
-  for (const url of endpoints) {
-    try {
-      const res = await axios.get(url, { timeout: 6000 });
-      const dl = res.data?.result?.download_url || res.data?.result?.url || res.data?.data?.download?.url;
-      const title = res.data?.result?.title || res.data?.data?.title || query;
-      if (dl) return { url: dl, title };
-    } catch (_) {}
-  }
-  return null;
-}
+const ytdlp = require('../lib/ytdlp');
 
 module.exports = {
   name: 'downloader',
-  commands: ['song', 'ytmp3', 'video', 'ytmp4', 'yts', 'tiktok', 'tt', 'fb', 'facebook', 'ig', 'insta', 'apk', 'mediafire'],
+  commands: ['song', 'ytmp3', 'play', 'video', 'ytmp4', 'yts', 'tiktok', 'tt', 'fb', 'facebook', 'ig', 'insta', 'apk', 'mediafire'],
   execute: async (sock, m, { command, args, prefix }) => {
     const query = args.join(' ');
 
     switch (command) {
       case 'song':
-      case 'ytmp3': {
-        if (!query) return m.reply(`❓ Song name ya YouTube link enter karein!\nMaslan: *${prefix}song Dil Dil Pakistan*`);
-        await m.react('⏳');
-
+      case 'ytmp3':
+      case 'play': {
+        if (!query) return m.reply(`\u2753 Song ka naam ya YouTube link bhejein!\nMaslan: *${prefix}song Dil Dil Pakistan*`);
+        await m.react('\u23f3');
+        let result = null;
         try {
-          const audioData = await getFastAudioStream(query);
-
-          if (audioData && audioData.url) {
-            await sock.sendMessage(m.chat, {
-              audio: { url: audioData.url },
-              mimetype: 'audio/mpeg',
-              fileName: `${audioData.title}.mp3`
-            }, { quoted: m });
-            await m.react('🎵');
-          } else {
-            await m.reply(`🎵 *Song Downloaded:* High-speed stream processed for "${query}".`);
+          result = await ytdlp.downloadAudio(query, { bitrate: '128' });
+          if (!result.ok) {
+            await m.react('\u274c');
+            return m.reply(`\u274c *Song download failed*\n\n${result.error}`);
           }
+          const sizeMB = (fs.statSync(result.file).size / (1024 * 1024)).toFixed(2);
+          await sock.sendMessage(m.chat, {
+            audio: { url: result.file },
+            mimetype: 'audio/mpeg',
+            fileName: `${result.title}.mp3`,
+            ptt: false
+          }, { quoted: m });
+          await m.react('\ud83c\udfb5');
+          console.log(`\ud83c\udfb5 .song served "${result.title}" (${sizeMB} MB)`);
         } catch (e) {
-          await m.reply('❌ Song download error: ' + e.message);
+          await m.react('\u274c');
+          await m.reply('\u274c Song download error: ' + (e && e.message ? e.message : e));
+        } finally {
+          if (result && result.dir) ytdlp.cleanupDir(result.dir);
         }
         break;
       }
 
       case 'video':
       case 'ytmp4': {
-        if (!query) return m.reply(`❓ Video title ya YouTube link enter karein!\nMaslan: *${prefix}video funny video*`);
-        await m.react('⏳');
-
+        if (!query) return m.reply(`\u2753 Video ka naam ya YouTube link bhejein!\nMaslan: *${prefix}video funny cats*`);
+        await m.react('\u23f3');
+        let result = null;
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/download/ytmp4?apikey=gifted&url=${encodeURIComponent(query)}`, { timeout: 8000 })
-            .catch(() => null);
-
-          if (res && res.data && res.data.result) {
-            const resData = res.data.result;
-            await sock.sendMessage(m.chat, {
-              video: { url: resData.download_url },
-              caption: `🎬 *Title:* ${resData.title || query}\n⚡ *Downloaded via Saqib-MD*`
-            }, { quoted: m });
-            await m.react('🎬');
-          } else {
-            await m.reply(`🎬 *Video Stream ready for:* "${query}"`);
+          result = await ytdlp.downloadVideo(query, { height: 480 });
+          if (!result.ok) {
+            await m.react('\u274c');
+            return m.reply(`\u274c *Video download failed*\n\n${result.error}`);
           }
+          const sizeMB = (fs.statSync(result.file).size / (1024 * 1024)).toFixed(2);
+          await sock.sendMessage(m.chat, {
+            video: { url: result.file },
+            mimetype: 'video/mp4',
+            fileName: `${result.title}.mp4`,
+            caption: `\ud83c\udfac *${result.title}*\n\ud83d\udce6 ${sizeMB} MB\n\u26a1 _Downloaded via Saqib-MD_`
+          }, { quoted: m });
+          await m.react('\ud83c\udfac');
         } catch (e) {
-          await m.reply('❌ Video download failed: ' + e.message);
+          await m.react('\u274c');
+          await m.reply('\u274c Video download error: ' + (e && e.message ? e.message : e));
+        } finally {
+          if (result && result.dir) ytdlp.cleanupDir(result.dir);
         }
         break;
       }
 
       case 'yts': {
-        if (!query) return m.reply(`❓ Search keyword enter karein!\nMaslan: *${prefix}yts Ertugrul Ghazi*`);
+        if (!query) return m.reply(`\u2753 Search keyword enter karein!\nMaslan: *${prefix}yts Ertugrul Ghazi*`);
         await m.reply(config.MESSAGES.WAIT);
-
         try {
-          const res = await axios.get(`https://api.giftedtech.my.id/api/search/yts?apikey=gifted&query=${encodeURIComponent(query)}`)
-            .catch(() => null);
-
-          if (res && res.data && res.data.result) {
-            let msg = `🔍 *── YOUTUBE SEARCH RESULTS ──* 🔍\n\n`;
-            res.data.result.slice(0, 5).forEach((v, i) => {
-              msg += `*${i + 1}. ${v.title}*\n⏱️ Duration: ${v.timestamp || 'N/A'}\n🔗 Link: ${v.url}\n\n`;
-            });
-            await m.reply(msg);
-          } else {
-            await m.reply(`🔍 YouTube Search results for: *${query}*`);
-          }
+          const info = await ytdlp.getInfo(query);
+          if (!info.ok) return m.reply(`\u274c *Search failed*\n\n${info.error}`);
+          const mins = info.duration ? Math.floor(info.duration / 60) + ':' + String(Math.floor(info.duration % 60)).padStart(2, '0') : 'N/A';
+          const msg = `\ud83d\udd0d *\u2500\u2500 YOUTUBE RESULT \u2500\u2500* \ud83d\udd0d\n\n` +
+            `\ud83c\udfb5 *${info.title}*\n` +
+            `\ud83d\udc64 ${info.uploader || 'Unknown'}\n` +
+            `\u23f1\ufe0f ${mins}\n` +
+            `\ud83d\udd17 ${info.webpage_url}\n\n` +
+            `_Download: ${prefix}song <link>_`;
+          await m.reply(msg);
         } catch (e) {
-          await m.reply('❌ YouTube search failed: ' + e.message);
+          await m.reply('\u274c YouTube search failed: ' + (e && e.message ? e.message : e));
         }
         break;
       }
