@@ -137,6 +137,33 @@ app.get('/health', (req, res) => {
 
 // Live diagnostics: proves the socket can actually deliver to a given JID.
 // Usage: /selftest?jid=92300...  (defaults to the owner's own number)
+// Owner-only: verify the TikTok search cascade from the live server IP.
+// Usage: /ttcheck?key=<owner>&q=cricket
+app.get('/ttcheck', async (req, res) => {
+  try {
+    const key = String(req.query.key || '').replace(/[^0-9]/g, '');
+    const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+    if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
+    const q = String(req.query.q || 'cricket');
+    const t0 = Date.now();
+    const plugin = require('./plugins/tiktok');
+    const r = await plugin._search(q, 5);
+    res.json({
+      ok: r.ok,
+      query: q,
+      provider: r.provider || null,
+      count: (r.results || []).length,
+      ms: Date.now() - t0,
+      sample: (r.results || []).slice(0, 3).map(function (v) {
+        return { title: String(v.title || '').slice(0, 60), author: v.author, duration: v.duration };
+      }),
+      error: r.error || null
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Owner-only: dump the live toggle state so the defaults can be verified
 // without opening WhatsApp. Usage: /settings?key=<owner number>
 app.get('/settings', (req, res) => {

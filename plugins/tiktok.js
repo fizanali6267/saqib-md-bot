@@ -178,6 +178,8 @@ async function downloadTikTok(url) {
 
 module.exports = {
   name: 'tiktok',
+  _search: searchTikTok,
+  _download: downloadTikTok,
   commands: ['tts', 'tiktoksearch', 'ttsearch', 'ttdl', 'tiktokdl', 'ttmp4'],
 
   execute: async (sock, m, { command, args, prefix }) => {
