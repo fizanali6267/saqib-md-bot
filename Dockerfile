@@ -9,7 +9,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   yt-dlp-ejs provides the solver, node (already in this image) is the runtime.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ffmpeg imagemagick webp git ca-certificates curl tzdata python3 python3-pip && \
+        ffmpeg imagemagick webp git ca-certificates curl tzdata python3 python3-pip \
+        tesseract-ocr tesseract-ocr-eng && \
     pip3 install --no-cache-dir --break-system-packages -U yt-dlp yt-dlp-ejs bgutil-ytdlp-pot-provider && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

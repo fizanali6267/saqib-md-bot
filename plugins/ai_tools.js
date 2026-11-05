@@ -2,6 +2,122 @@ const axios = require('axios');
 const config = require('../config');
 const { askGemini, askGeminiImage, isKeyConfigured } = require('../lib/gemini');
 
+// ---------------------------------------------------------------------------
+// Web search. Google/DuckDuckGo/Brave/Mojeek all block datacenter IPs, and
+// Bing's HTML endpoint returns "no results" for multi-word queries from this
+// network. Yahoo Search (Bing-backed) works reliably, so it is primary and
+// Bing is kept as a fallback.
+// ---------------------------------------------------------------------------
+function decodeYahooUrl(href) {
+  try {
+    const m = String(href || '').match(/\/RU=([^/]+)\//);
+    if (m) return decodeURIComponent(m[1]);
+  } catch (_) {}
+  return href || '';
+}
+
+function decodeBingUrl(href) {
+  try {
+    if (!href) return '';
+    if (!href.includes('bing.com/ck/a')) return href;
+    const u = new URL(href);
+    const raw = u.searchParams.get('u') || '';
+    if (!raw.startsWith('a1')) return href;
+    const b64 = raw.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = Buffer.from(b64, 'base64').toString('utf8');
+    return /^https?:\/\//.test(decoded) ? decoded : href;
+  } catch (_) {
+    return href;
+  }
+}
+
+const SEARCH_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+async function yahooSearch(query, limit = 6) {
+  const cheerio = require('cheerio');
+  const res = await axios.get('https://search.yahoo.com/search', {
+    params: { p: query },
+    headers: { 'User-Agent': SEARCH_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+    timeout: 20000,
+  });
+  const $ = cheerio.load(res.data);
+  const out = [];
+  $('div.algo').each((_, el) => {
+    if (out.length >= limit) return;
+    const title = $(el).find('h3.title').first().text().replace(/\s+/g, ' ').trim();
+    const url = decodeYahooUrl($(el).find('div.compTitle a').first().attr('href'));
+    const snippet = $(el).find('.compText').first().text().replace(/\s+/g, ' ').trim();
+    if (title && /^https?:\/\//.test(url)) out.push({ title, url, snippet });
+  });
+  return out;
+}
+
+async function bingSearch(query, limit = 6) {
+  const cheerio = require('cheerio');
+  const res = await axios.get('https://www.bing.com/search', {
+    params: { q: query, count: 20, setlang: 'en' },
+    headers: { 'User-Agent': SEARCH_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+    timeout: 20000,
+  });
+  const $ = cheerio.load(res.data);
+  const out = [];
+  $('li.b_algo').each((_, el) => {
+    if (out.length >= limit) return;
+    const a = $(el).find('h2 a').first();
+    const title = a.text().trim();
+    const url = decodeBingUrl(a.attr('href'));
+    const snippet = $(el).find('.b_caption p, .b_algoSlug, p').first().text().trim();
+    if (title && url) out.push({ title, url, snippet });
+  });
+  return out;
+}
+
+async function webSearch(query, limit = 6) {
+  try {
+    const r = await yahooSearch(query, limit);
+    if (r.length) return r;
+  } catch (_) {}
+  return bingSearch(query, limit);
+}
+
+// ---------------------------------------------------------------------------
+// Wiktionary REST API — free, no key, no Cloudflare challenge.
+// ---------------------------------------------------------------------------
+function stripHtml(html) {
+  return String(html || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/"/g, '"')
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function wiktionaryDefine(word) {
+  const res = await axios.get(
+    `https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(word)}`,
+    { headers: { 'User-Agent': 'SAQIB-MD-Bot/1.0 (WhatsApp bot)' }, timeout: 20000 }
+  );
+  const data = res.data || {};
+  const entries = data.en || data[Object.keys(data)[0]];
+  if (!Array.isArray(entries) || !entries.length) return null;
+
+  const groups = [];
+  for (const entry of entries) {
+    const definitions = (entry.definitions || [])
+      .map((d) => stripHtml(d.definition))
+      .filter(Boolean);
+    if (definitions.length) {
+      groups.push({ partOfSpeech: entry.partOfSpeech, definitions });
+    }
+  }
+  if (!groups.length) return null;
+  return { word: word, phonetic: '', groups };
+}
+
 module.exports = {
   name: 'ai_tools',
   commands: ['ai', 'gpt', 'gemini', 'imagine', 'weather', 'google', 'calc', 'shorturl', 'define'],
@@ -63,10 +179,13 @@ module.exports = {
             return;
           }
 
-          // Priority 2: free public generator (no key needed)
-          const imageUrl = `https://api.giftedtech.my.id/api/ai/flux?apikey=gifted&prompt=${encodeURIComponent(query)}`;
+          // Priority 2: Pollinations.ai — free, keyless, reliable.
+          const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(query)}?width=1024&height=1024&nologo=true&seed=${Date.now() % 100000}`;
+          const imgRes = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 120000 });
+          const imgBuf = Buffer.from(imgRes.data);
+          if (!imgBuf.length) throw new Error('empty image from generator');
           await sock.sendMessage(m.chat, {
-            image: { url: imageUrl },
+            image: imgBuf,
             caption: `🎨 *AI Art Generated for:* "${query}"\n⚡ *Powered by Saqib-MD*`
           }, { quoted: m });
         } catch (e) {
@@ -108,7 +227,20 @@ module.exports = {
 
       case 'google': {
         if (!query) return m.reply(`❓ Enter a search query!\nExample: *${prefix}google ICC Champions Trophy*`);
-        await m.reply(`🔍 *Google Search for:* "${query}"\nhttps://www.google.com/search?q=${encodeURIComponent(query)}`);
+        await m.react('🔍').catch(() => null);
+        try {
+          const results = await webSearch(query, 6);
+          if (!results.length) throw new Error('no results');
+          let out = `🔍 *── SEARCH RESULTS ──*\n📝 *Query:* ${query}\n\n`;
+          results.forEach((r, i) => {
+            out += `*${i + 1}. ${r.title}*\n${r.snippet ? r.snippet + '\n' : ''}🔗 ${r.url}\n\n`;
+          });
+          await m.reply(out.trim());
+        } catch (e) {
+          await m.reply(
+            `❌ *Search failed:* ${e.message}\n\n🔗 Try directly:\nhttps://www.google.com/search?q=${encodeURIComponent(query)}`
+          );
+        }
         break;
       }
 
@@ -137,13 +269,23 @@ module.exports = {
 
       case 'define': {
         if (!query) return m.reply(`❓ Enter the word whose meaning you want to know!\nExample: *${prefix}define algorithm*`);
+        const word = query.trim().split(/\s+/)[0];
         try {
-          const res = await axios.get(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(query)}`);
-          const data = res.data[0];
-          const definition = data.meanings[0].definitions[0].definition;
-          await m.reply(`📖 *Word:* ${data.word}\n\n📚 *Definition:*\n${definition}`);
+          const def = await wiktionaryDefine(word);
+          if (!def) throw new Error('not found');
+          let out = `📖 *Word:* ${def.word}\n`;
+          if (def.phonetic) out += `🔊 *Pronunciation:* ${def.phonetic}\n`;
+          out += '\n';
+          for (const group of def.groups.slice(0, 3)) {
+            out += `📚 *${group.partOfSpeech || 'Definition'}*\n`;
+            group.definitions.slice(0, 3).forEach((d, i) => {
+              out += `${i + 1}. ${d}\n`;
+            });
+            out += '\n';
+          }
+          await m.reply(out.trim());
         } catch (e) {
-          await m.reply(`❌ "${query}"  dictionary definition was not found.`);
+          await m.reply(`❌ *"${word}"* — dictionary definition was not found.`);
         }
         break;
       }

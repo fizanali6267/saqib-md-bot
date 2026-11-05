@@ -1,4 +1,5 @@
 const config = require('../config');
+const { isAdmin } = require('../lib/admin');
 
 module.exports = {
   name: 'privacy_tools',
@@ -13,7 +14,7 @@ module.exports = {
         const isBotMessage = m.quoted.fromMe;
         if (m.isGroup) {
           const groupMeta = await sock.groupMetadata(m.chat);
-          const isSenderAdmin = groupMeta?.participants.find(p => p.id === m.sender)?.admin || m.fromMe;
+          const isSenderAdmin = isAdmin(groupMeta?.participants, m.sender) || m.fromMe;
           if (!isBotMessage && !isSenderAdmin) {
             return m.reply(config.MESSAGES.ADMIN_ONLY);
           }
@@ -66,11 +67,19 @@ module.exports = {
         if (!destination) destination = m.chat;
         else destination = `${destination}@s.whatsapp.net`;
 
+        // `generateForwardMessageContent` needs the FULL message content object
+        // (e.g. `{ imageMessage: {...} }`), not the inner media node. Passing
+        // `m.quoted.msg` made Baileys throw "no content in message".
+        const content = m.quoted.rawMessage || m.quoted.message || null;
+        if (!content || !Object.keys(content).length) {
+          return m.reply('❌ *Failed to forward message:* the quoted message has no content to forward.');
+        }
+
         try {
-          await sock.sendMessage(destination, { forward: m.quoted.msg }, { quoted: m });
+          await sock.sendMessage(destination, { forward: content, force: true }, { quoted: m });
           await m.reply(`✅ Message forwarded successfully.`);
         } catch (e) {
-          await m.reply('❌ Failed to forward message: ' + e.message);
+          await m.reply('❌ Failed to forward message: ' + (e.message || 'unknown error'));
         }
         break;
       }

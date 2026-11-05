@@ -1,4 +1,5 @@
 const config = require('../config');
+const { flags: adminFlags, findParticipant } = require('../lib/admin');
 
 // In-memory warning map & High-Speed Group Metadata Cache
 const warnDB = new Map();
@@ -26,10 +27,7 @@ module.exports = {
 
     const groupMetadata = await getCachedGroupMetadata(sock, m.chat);
     const participants = groupMetadata.participants || [];
-    const botNumber = sock.user.id.split(':')[0].split('@')[0];
-    const botId = botNumber + '@s.whatsapp.net';
-    const isBotAdmin = participants.find(p => p.id === botId)?.admin;
-    const isSenderAdmin = participants.find(p => p.id === m.sender)?.admin || m.fromMe;
+    const { isBotAdmin, isSenderAdmin } = adminFlags(participants, sock, m);
 
     switch (command) {
       case 'tagall': {
@@ -59,12 +57,25 @@ module.exports = {
         if (!isSenderAdmin) return m.reply(config.MESSAGES.ADMIN_ONLY);
         if (!isBotAdmin) return m.reply(config.MESSAGES.BOT_ADMIN);
 
-        const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : null);
-        if (!target) return m.reply(`❓ Please tag a member or quote a message.\nExample: *${prefix}kick @user*`);
+        const rawTarget = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : null);
+        if (!rawTarget) return m.reply(`❓ Please tag a member or quote a message.\nExample: *${prefix}kick @user*`);
 
-        await sock.groupParticipantsUpdate(m.chat, [target], 'remove');
-        groupCache.delete(m.chat); // Invalidate cache
-        await m.reply(`✅ Member removed successfully.`);
+        // In LID-addressed groups the participant's real id is the LID, not the
+        // phone number, so we must send whatever id the group actually uses.
+        const entry = findParticipant(participants, rawTarget);
+        const target = (entry && (entry.id || entry.lid || entry.jid)) || rawTarget;
+
+        try {
+          const res = await sock.groupParticipantsUpdate(m.chat, [target], 'remove');
+          groupCache.delete(m.chat); // Invalidate cache
+          const st = Array.isArray(res) ? res[0]?.status : null;
+          if (st && !String(st).includes('200')) {
+            return m.reply(`❌ *Could not remove that member.* WhatsApp said: ${st}`);
+          }
+          await m.reply(`✅ Member removed successfully.`);
+        } catch (e) {
+          await m.reply(`❌ *Kick failed:* ${e.message || 'unknown error'}`);
+        }
         break;
       }
 

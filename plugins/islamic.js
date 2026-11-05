@@ -137,10 +137,12 @@ module.exports = {
         // timeout, and a complete Arabic text fallback if every mirror fails.
         await m.react('🔊').catch(() => null);
 
+        // Verified working mirrors (archive.org is the most reliable one).
         const cdnMirrors = [
-          'https://download.quranicaudio.com/athan/makkah.mp3',
-          'https://server8.mp3quran.net/athan/Adhan_Makkah.mp3',
-          'https://www.islamcan.com/audio/adhan/azan1.mp3'
+          'https://ia801504.us.archive.org/25/items/adhan_202010/adhan.mp3',
+          'https://archive.org/download/adhan_202010/adhan.mp3',
+          'https://www.islamcan.com/audio/adhan/azan1.mp3',
+          'https://download.quranicaudio.com/athan/makkah.mp3'
         ];
 
         let audioSent = false;

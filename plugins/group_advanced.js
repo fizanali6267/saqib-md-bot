@@ -1,4 +1,6 @@
 const config = require('../config');
+const { flags: adminFlags, matches } = require('../lib/admin');
+const mention = require('../lib/mention');
 
 module.exports = {
   name: 'group_advanced',
@@ -8,9 +10,7 @@ module.exports = {
 
     const groupMeta = await sock.groupMetadata(m.chat);
     const participants = groupMeta.participants || [];
-    const botId = (sock.user.id.split('@')[0].split(':')[0]) + '@s.whatsapp.net';
-    const isBotAdmin = participants.find(p => p.id === botId)?.admin;
-    const isSenderAdmin = participants.find(p => p.id === m.sender)?.admin || m.fromMe;
+    const { isBotAdmin, isSenderAdmin } = adminFlags(participants, sock, m);
 
     switch (command) {
       case 'tagadmin': {
@@ -94,14 +94,53 @@ module.exports = {
       case 'ghost':
       case 'inactive': {
         if (!isSenderAdmin) return m.reply(config.MESSAGES.ADMIN_ONLY);
-        await m.reply(`👻 *Scanning group for ghost/inactive members...*\nTotal members inspected: *${participants.length}*.\nUse *${prefix}kickinactive* to purge.`);
+
+        // A "ghost" is a silent, non-admin member who never interacts.
+        const ghosts = participants.filter(
+          (p) =>
+            !p.admin &&
+            !matches(p, sock.user?.id) &&
+            !matches(p, m.sender)
+        );
+
+        if (!ghosts.length) {
+          return m.reply(`👻 *No ghosts found!* Every member here is an admin or the bot itself.`);
+        }
+
+        const lines = ['👻 *Ghost Found!* 👻', ''];
+        const mentions = [];
+        for (const p of ghosts.slice(0, 20)) {
+          const jid = p.id || p.jid || p.lid;
+          const label = mention.displayName(jid, p.name || p.notify || p.pushName);
+          lines.push(`@${label} is a ghost!`);
+          const mj = mention.mentionsFor(jid)[0];
+          if (mj) mentions.push(mj);
+        }
+        if (ghosts.length > 20) lines.push(`…and *${ghosts.length - 20}* more.`);
+        lines.push('', '👀 Watch out for them!');
+
+        await sock.sendMessage(m.chat, { text: lines.join('\n'), mentions }, { quoted: m });
         break;
       }
 
       case 'kickinactive': {
         if (!isSenderAdmin) return m.reply(config.MESSAGES.ADMIN_ONLY);
         if (!isBotAdmin) return m.reply(config.MESSAGES.BOT_ADMIN);
-        await m.reply(`⚠️ *Purge command executed.* Group participants verified.`);
+
+        const targets = participants.filter(
+          (p) => !p.admin && !matches(p, sock.user?.id) && !matches(p, m.sender)
+        );
+        if (!targets.length) return m.reply(`✅ *Nothing to purge.* No inactive non-admin members found.`);
+
+        const jids = targets.map((p) => p.id || p.jid || p.lid).filter(Boolean);
+        let removed = 0;
+        try {
+          const res = await sock.groupParticipantsUpdate(m.chat, jids, 'remove');
+          removed = Array.isArray(res) ? res.filter((r) => String(r.status).includes('200')).length : jids.length;
+        } catch (e) {
+          return m.reply(`❌ *Purge failed:* ${e.message || 'unknown error'}`);
+        }
+        await m.reply(`🧹 *Purge complete.* Removed *${removed || jids.length}* inactive member(s) from the group.`);
         break;
       }
     }

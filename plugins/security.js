@@ -11,26 +11,66 @@ module.exports = {
         return m.reply(config.MESSAGES.OWNER_ONLY);
       }
 
-      // Supports viewOnce, viewOnceMessageV2, and viewOnceMessageV2Extension
-      if (m.quoted && (m.quoted.isViewOnce || m.quoted.type === 'viewOnceMessage' || m.quoted.msg?.viewOnce)) {
+      // Robust view-once detection. `m.quoted.type` is rewritten to the INNER
+      // content type (imageMessage/videoMessage) by serialize, so checking
+      // `type === 'viewOnceMessage'` never matched. We inspect the raw payload.
+      const raw = (m.quoted && (m.quoted.rawMessage || m.quoted.message)) || null;
+      const VO_KEYS = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension'];
+      const isViewOnce = !!(
+        m.quoted &&
+        (m.quoted.isViewOnce ||
+          (raw && VO_KEYS.some((k) => raw[k])) ||
+          m.quoted.msg?.viewOnce ||
+          m.quoted.msg?.viewOnceV2)
+      );
+
+      // Also allow .vv on any quoted image/video (helpful, harmless).
+      const quotedType = m.quoted?.type || '';
+      const quotedMime = m.quoted?.msg?.mimetype || '';
+      const isImage = quotedType.includes('image') || quotedMime.startsWith('image/');
+      const isVideo = quotedType.includes('video') || quotedMime.startsWith('video/');
+      const isMedia = isImage || isVideo;
+
+      if (m.quoted && (isViewOnce || isMedia)) {
         try {
           await m.react('⏳');
-          const buffer = await m.quoted.download();
-          const mediaType = (m.quoted.type?.includes('image') || m.quoted.msg?.mimetype?.includes('image')) ? 'image' : 'video';
+          let buffer;
+          try {
+            buffer = await m.quoted.download();
+          } catch (firstErr) {
+            // Fallback: some clients deliver the payload without the wrapper.
+            const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+            buffer = await downloadMediaMessage(
+              {
+                key: {
+                  remoteJid: m.chat,
+                  id: m.quoted.id,
+                  participant: m.quoted.senderLid || m.quoted.sender,
+                },
+                message: raw,
+              },
+              'buffer',
+              {}
+            );
+          }
+          if (!buffer || !buffer.length) throw new Error('media download returned no data');
+
+          const mediaType = isImage ? 'image' : 'video';
 
           // Determine destination: .vv = current chat, .vv2 = owner private inbox
-          const isInboxMode = (command === 'vv2' || command === 'vvinbox');
+          const isInboxMode = command === 'vv2' || command === 'vvinbox';
           const destinationChat = isInboxMode ? (config.getOwnerJid(sock) || m.chat) : m.chat;
 
-          const senderNumber = m.quoted.sender.split('@')[0].split(':')[0];
-          const caption = isInboxMode 
+          const senderJid = m.quoted.sender || m.quoted.senderLid || m.chat;
+          const senderNumber = String(senderJid).split('@')[0].split(':')[0];
+          const caption = isInboxMode
             ? `🔓 *── VIEW ONCE RECOVERED TO INBOX ──* 🔓\n👤 *Sent by:* @${senderNumber}\n💬 *Original Chat:* ${m.isGroup ? 'Group' : 'Direct DM'}\n🕒 *Time:* ${new Date().toLocaleTimeString()}`
             : `🔓 *View Once Media Recovered by Saqib-MD*`;
 
           await sock.sendMessage(destinationChat, {
             [mediaType]: buffer,
-            caption: caption,
-            mentions: [m.quoted.sender]
+            caption,
+            mentions: [senderJid],
           });
 
           if (isInboxMode) {
@@ -38,7 +78,8 @@ module.exports = {
           }
           await m.react('✅');
         } catch (e) {
-          await m.reply('❌ Failed to download ViewOnce media: ' + e.message);
+          await m.react('❌');
+          await m.reply('❌ Failed to download ViewOnce media: ' + (e.message || 'unknown error'));
         }
       } else {
         await m.reply(`💡 Reply to a *View-Once* image or video with *${prefix}${command}*.\n• *${prefix}vv* (Recover it in the current chat)\n• *${prefix}vv2* (Send it secretly to your personal inbox)`);

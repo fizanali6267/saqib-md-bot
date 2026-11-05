@@ -5,6 +5,64 @@ const os = require('os');
 const { exec } = require('child_process');
 const axios = require('axios');
 const config = require('../config');
+const { createSticker } = require('../lib/sticker');
+
+// ---------------------------------------------------------------------------
+// Google Emoji Kitchen (gstatic) — free, keyless, always available.
+// URL shape: https://www.gstatic.com/android/keyboard/emojikitchen/<date>/u<L>/u<L>_u<R>.png
+// The date folder varies per emoji pair, so we probe all known release dates
+// in parallel with HEAD requests and only download the matching image.
+// ---------------------------------------------------------------------------
+const KITCHEN_DATES = [
+  '20201001','20210218','20210521','20210831','20211115','20220110','20220203',
+  '20220406','20220506','20220815','20220823','20221101','20221107','20230118',
+  '20230126','20230127','20230216','20230221','20230301','20230405','20230418',
+  '20230421','20230426','20230803','20230818','20230821','20231113','20231128',
+  '20240206','20240214','20240530','20240610','20240715','20241021','20241023',
+  '20250130','20250204','20250430','20250501','20250519','20250731','20251029',
+  '20260128','20260202','20260429'
+];
+
+function emojiCodepoints(emoji) {
+  const cps = [...String(emoji)].map((c) => c.codePointAt(0).toString(16));
+  const joined = cps.join('-');
+  const noFe0f = joined.replace(/-fe0f/g, '');
+  const out = new Set([joined]);
+  if (noFe0f) out.add(noFe0f);
+  return [...out];
+}
+
+async function probeKitchen(leftCp, rightCp) {
+  const results = await Promise.all(
+    KITCHEN_DATES.map(async (date) => {
+      const url = `https://www.gstatic.com/android/keyboard/emojikitchen/${date}/u${leftCp}/u${leftCp}_u${rightCp}.png`;
+      try {
+        const res = await axios.head(url, { timeout: 8000, validateStatus: (s) => s === 200 });
+        if (res.status === 200) return url;
+      } catch (_) {}
+      return null;
+    })
+  );
+  return results.find(Boolean) || null;
+}
+
+async function findEmojiKitchen(e1, e2) {
+  const lefts = emojiCodepoints(e1);
+  const rights = emojiCodepoints(e2);
+  // Try both orders — Google stores some pairs only one way round.
+  for (const [a, b] of [[lefts, rights], [rights, lefts]]) {
+    for (const l of a) {
+      for (const r of b) {
+        const url = await probeKitchen(l, r);
+        if (url) {
+          const img = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
+          return { url, data: Buffer.from(img.data) };
+        }
+      }
+    }
+  }
+  return null;
+}
 
 module.exports = {
   name: 'audio_fx',
@@ -117,22 +175,24 @@ module.exports = {
         try {
           const e1 = emojis[0];
           const e2 = emojis[1];
-          const res = await axios.get(`https://tenor.googleapis.com/v2/featured?key=LIVDSRZULELA&limit=1`).catch(() => null);
-          const mixUrl = `https://api.giftedtech.my.id/api/maker/emojimix?apikey=gifted&emoji1=${encodeURIComponent(e1)}&emoji2=${encodeURIComponent(e2)}`;
-          const imgRes = await axios.get(mixUrl, { responseType: 'arraybuffer' }).catch(() => null);
-
-          if (imgRes && imgRes.data) {
-            await sock.sendMessage(m.chat, {
-              sticker: Buffer.from(imgRes.data),
-              packname: config.STICKER_PACK_NAME,
-              author: config.STICKER_AUTHOR
-            }, { quoted: m });
-            await m.react('✅');
-          } else {
-            await m.reply(`🎨 *Emoji Mix created for:* ${e1} + ${e2}`);
+          const hit = await findEmojiKitchen(e1, e2);
+          if (!hit) {
+            await m.react('❌');
+            return m.reply(
+              `😔 *Google hasn't made a mix for* ${e1} + ${e2} *yet.*\n` +
+                `Try another pair, e.g. *${prefix}emojimix 😂+😍* or *${prefix}emojimix 🐱+🔥*`
+            );
           }
+          const sticker = await createSticker(hit.data, {
+            packName: config.STICKER_PACK_NAME,
+            author: config.STICKER_AUTHOR,
+            emoji: e1 + e2,
+          });
+          await sock.sendMessage(m.chat, { sticker }, { quoted: m });
+          await m.react('✅');
         } catch (e) {
-          await m.reply('❌ Failed to mix emojis: ' + e.message);
+          await m.react('❌');
+          await m.reply('❌ Failed to mix emojis: ' + (e.message || 'unknown error'));
         }
         break;
       }

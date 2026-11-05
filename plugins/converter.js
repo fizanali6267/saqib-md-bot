@@ -1,6 +1,41 @@
 const googleTTS = require('google-tts-api');
 const axios = require('axios');
 const config = require('../config');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { execFile } = require('child_process');
+const { createSticker } = require('../lib/sticker');
+
+// Local tesseract OCR (installed in the Docker image) with an online fallback.
+function runOcr(buffer) {
+  return new Promise((resolve, reject) => {
+    const file = path.join(os.tmpdir(), `ocr-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.png`);
+    fs.writeFileSync(file, buffer);
+    execFile('tesseract', [file, 'stdout', '-l', 'eng', '--psm', '3'], { timeout: 45000, maxBuffer: 8 * 1024 * 1024 }, async (err, stdout) => {
+      fs.unlink(file, () => {});
+      if (!err && stdout && stdout.trim()) return resolve(stdout);
+      // Fallback: ocr.space free tier
+      try {
+        const axios = require('axios');
+        const FormData = require('form-data');
+        const form = new FormData();
+        form.append('apikey', 'helloworld');
+        form.append('language', 'eng');
+        form.append('file', buffer, { filename: 'image.png' });
+        const res = await axios.post('https://api.ocr.space/parse/image', form, {
+          headers: form.getHeaders(),
+          timeout: 30000,
+        });
+        const parsed = res.data?.ParsedResults?.[0]?.ParsedText;
+        if (parsed) return resolve(parsed);
+      } catch (_) {}
+      if (err) return reject(new Error(err.message || 'tesseract not available'));
+      resolve(stdout || '');
+    });
+  });
+}
 
 module.exports = {
   name: 'converter',
@@ -17,11 +52,14 @@ module.exports = {
         try {
           await m.reply(config.MESSAGES.WAIT);
           const buffer = await targetMsg.download();
-          await sock.sendMessage(m.chat, {
-            sticker: buffer,
-            packname: config.STICKER_PACK_NAME,
-            author: config.STICKER_AUTHOR
-          }, { quoted: m });
+          const sticker = await createSticker(buffer, {
+            packName: config.STICKER_PACK_NAME,
+            author: config.STICKER_AUTHOR,
+            emoji: '🎨',
+            isVideo: !!targetMsg.type?.includes('video'),
+            animated: !!targetMsg.type?.includes('video'),
+          });
+          await sock.sendMessage(m.chat, { sticker }, { quoted: m });
         } catch (e) {
           await m.reply('❌ Sticker creation failed: ' + e.message);
         }
@@ -38,12 +76,13 @@ module.exports = {
           const text = args.join(' ');
           const [pack, author] = text.includes('|') ? text.split('|').map(s => s.trim()) : [text || config.STICKER_PACK_NAME, config.STICKER_AUTHOR];
           const buffer = await m.quoted.download();
-
-          await sock.sendMessage(m.chat, {
-            sticker: buffer,
-            packname: pack,
-            author: author
-          }, { quoted: m });
+          const sticker = await createSticker(buffer, {
+            packName: pack,
+            author: author,
+            emoji: '🎨',
+            animated: true,
+          });
+          await sock.sendMessage(m.chat, { sticker }, { quoted: m });
         } catch (e) {
           await m.reply('❌ Error changing sticker metadata: ' + e.message);
         }
@@ -147,7 +186,21 @@ module.exports = {
         if (!targetMsg || !targetMsg.type?.includes('image')) {
           return m.reply(`❓ Reply to an image containing text with *${prefix}ocr*.`);
         }
-        await m.reply(`🔍 *Reading text from image...* (OCR Processing)`);
+        try {
+          await m.react('⏳');
+          const buffer = await targetMsg.download();
+          if (!buffer || !buffer.length) throw new Error('could not download image');
+
+          const text = await runOcr(buffer);
+          await m.react('✅');
+          if (!text || !text.trim()) {
+            return m.reply(`🔍 *No readable text found* in that image.`);
+          }
+          await m.reply(`🔍 *── OCR RESULT ──*\n\n${text.trim()}`);
+        } catch (e) {
+          await m.react('❌');
+          await m.reply(`❌ *OCR failed:* ${e.message || 'unknown error'}`);
+        }
         break;
       }
     }

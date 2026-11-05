@@ -5,6 +5,21 @@ const os = require('os');
 const { exec } = require('child_process');
 const config = require('../config');
 
+// Resolve any user identifier (mention / quoted sender / raw number / LID) to a
+// real phone-number JID that `sock.updateBlockStatus` can act on.
+function resolveTargetJid(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  try {
+    const { resolvePn } = require('../lib/serialize');
+    const pn = resolvePn(s);
+    if (pn) return pn;
+  } catch (_) {}
+  const d = s.replace(/[^0-9]/g, '');
+  if (d.length >= 8 && d.length <= 14) return `${d}@s.whatsapp.net`;
+  return null;
+}
+
 module.exports = {
   name: 'owner',
   commands: ['mode', 'public', 'private', 'setpp', 'setppbot', 'block', 'unblock', 'broadcast', 'bc', 'join'],
@@ -103,19 +118,41 @@ module.exports = {
         break;
       }
 
-      case 'block': {
-        const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : (args[0] ? `${args[0].replace(/[^0-9]/g, '')}@s.whatsapp.net` : null));
-        if (!target) return m.reply(`❓ Mention a user or provide their number to block.`);
-        await sock.updateBlockStatus(target, 'block');
-        await m.reply(`🚫 @${target.split('@')[0]} has been blocked from contacting the bot!`, { mentions: [target] });
-        break;
-      }
-
+      case 'block':
       case 'unblock': {
-        const target = m.mentionedJid[0] || (m.quoted ? m.quoted.sender : (args[0] ? `${args[0].replace(/[^0-9]/g, '')}@s.whatsapp.net` : null));
-        if (!target) return m.reply(`❓ Mention a user or provide their number to unblock.`);
-        await sock.updateBlockStatus(target, 'unblock');
-        await m.reply(`✅ @${target.split('@')[0]} has been unblocked!`, { mentions: [target] });
+        const action = command === 'block' ? 'block' : 'unblock';
+        const rawTarget =
+          (m.mentionedJid && m.mentionedJid[0]) ||
+          (m.quoted && (m.quoted.sender || m.quoted.participant)) ||
+          args[0] ||
+          null;
+
+        if (!rawTarget) {
+          return m.reply(
+            `❓ *Usage:*\n• Reply to a message and type *${prefix}${command}*\n• Or mention someone: *${prefix}${command} @user*\n• Or give a number: *${prefix}${command} 923001234567*`
+          );
+        }
+
+        const target = resolveTargetJid(rawTarget);
+        if (!target) {
+          return m.reply(
+            `⚠️ I couldn't resolve *${String(rawTarget).split('@')[0]}* to a real phone number.\n` +
+              `This happens with WhatsApp's hidden *LID* ids. Reply directly to one of their messages (or send their number) and try again.`
+          );
+        }
+
+        try {
+          await sock.updateBlockStatus(target, action);
+          const num = target.split('@')[0];
+          if (action === 'block') {
+            await m.reply(`🚫 *@${num}* has been blocked from contacting the bot!`, { mentions: [target] });
+          } else {
+            await m.reply(`✅ *@${num}* has been unblocked!`, { mentions: [target] });
+          }
+        } catch (e) {
+          const detail = (e && (e.message || e.output?.payload?.message)) || 'unknown error';
+          await m.reply(`❌ Failed to ${action} *${target.split('@')[0]}*.\n*Reason:* ${detail}`);
+        }
         break;
       }
 

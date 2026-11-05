@@ -3,6 +3,107 @@ const fs = require('fs');
 const config = require('../config');
 const ytdlp = require('../lib/ytdlp');
 
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+// ---------------------------------------------------------------------------
+// YouTube search via the public results page (no yt-dlp, no bot wall).
+// ---------------------------------------------------------------------------
+async function youtubeSearch(query, limit = 6) {
+  const res = await axios.get('https://www.youtube.com/results', {
+    params: { search_query: query },
+    headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+    timeout: 25000,
+  });
+  const html = String(res.data || '');
+  const match = html.match(/ytInitialData\s*=\s*(\{.+?\});<\/script>/s);
+  if (!match) throw new Error('could not parse YouTube results');
+  const data = JSON.parse(match[1]);
+  const sections =
+    data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+  const out = [];
+  for (const section of sections) {
+    const items = section?.itemSectionRenderer?.contents || [];
+    for (const item of items) {
+      const v = item?.videoRenderer;
+      if (!v || !v.videoId) continue;
+      const title = (v.title?.runs || []).map((r) => r.text).join('') || '';
+      if (!title) continue;
+      out.push({
+        title,
+        id: v.videoId,
+        url: `https://www.youtube.com/watch?v=${v.videoId}`,
+        channel: v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || '',
+        duration: v.lengthText?.simpleText || '',
+        views: v.viewCountText?.simpleText || '',
+      });
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Aptoide APK search + direct download (public API, no key).
+// ---------------------------------------------------------------------------
+async function aptoideLookup(name) {
+  const search = await axios.get('https://ws75.aptoide.com/api/7/apps/search', {
+    params: { query: name, limit: 1 },
+    timeout: 20000,
+  });
+  const list = search.data?.datalist?.list || [];
+  if (!list.length) return null;
+  const pkg = list[0].package;
+  const get = await axios.get('https://ws75.aptoide.com/api/7/app/get', {
+    params: { package_name: pkg },
+    timeout: 20000,
+  });
+  const d = get.data?.nodes?.meta?.data;
+  if (!d || !d.file?.path) return null;
+  return {
+    name: d.name || name,
+    package: pkg,
+    version: d.file?.vername || d.vername || '',
+    size: d.file?.filesize || d.size || 0,
+    icon: d.icon || '',
+    developer: d.developer?.name || '',
+    url: d.file.path,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// TikTok via tikwm (no-watermark), used before falling back to yt-dlp.
+// ---------------------------------------------------------------------------
+async function tikwmLookup(url) {
+  const res = await axios.get('https://www.tikwm.com/api/', {
+    params: { url, hd: 1 },
+    timeout: 25000,
+    headers: { 'User-Agent': UA },
+  });
+  if (res.data?.code !== 0 || !res.data?.data) return null;
+  const d = res.data.data;
+  const abs = (u) => (u && u.startsWith('http') ? u : u ? `https://www.tikwm.com${u}` : null);
+  return {
+    title: d.title || 'TikTok video',
+    play: abs(d.play),
+    hd: abs(d.hdplay),
+    music: abs(d.music),
+    images: Array.isArray(d.images) ? d.images.map(abs) : null,
+  };
+}
+
+function humanSize(bytes) {
+  if (!bytes) return 'N/A';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let n = Number(bytes);
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i += 1;
+  }
+  return `${n.toFixed(1)} ${units[i]}`;
+}
+
 module.exports = {
   name: 'downloader',
   commands: ['song', 'ytmp3', 'play', 'video', 'ytmp4', 'yts', 'tiktok', 'tt', 'fb', 'facebook', 'ig', 'insta', 'apk', 'mediafire'],
@@ -96,21 +197,24 @@ module.exports = {
       }
 
       case 'yts': {
-        if (!query) return m.reply(`\u2753 Enter a search keyword!\nExample: *${prefix}yts Ertugrul Ghazi*`);
-        await m.reply(config.MESSAGES.WAIT);
+        if (!query) return m.reply(`❓ Enter a search keyword!\nExample: *${prefix}yts Dil Dil Pakistan*`);
+        await m.react('🔍').catch(() => null);
         try {
-          const info = await ytdlp.getInfo(query);
-          if (!info.ok) return m.reply(`\u274c *Search failed*\n\n${info.error}`);
-          const mins = info.duration ? Math.floor(info.duration / 60) + ':' + String(Math.floor(info.duration % 60)).padStart(2, '0') : 'N/A';
-          const msg = `\ud83d\udd0d *\u2500\u2500 YOUTUBE RESULT \u2500\u2500* \ud83d\udd0d\n\n` +
-            `\ud83c\udfb5 *${info.title}*\n` +
-            `\ud83d\udc64 ${info.uploader || 'Unknown'}\n` +
-            `\u23f1\ufe0f ${mins}\n` +
-            `\ud83d\udd17 ${info.webpage_url}\n\n` +
-            `_Download: ${prefix}song <link>_`;
-          await m.reply(msg);
+          const results = await youtubeSearch(query, 6);
+          if (!results.length) throw new Error('no results found');
+          let out = `🔍 *── YOUTUBE RESULTS ──*\n📝 *Query:* ${query}\n\n`;
+          results.forEach((r, i) => {
+            out += `*${i + 1}. ${r.title}*\n`;
+            if (r.channel) out += `👤 ${r.channel}\n`;
+            if (r.duration || r.views) out += `⏱️ ${r.duration || 'N/A'}${r.views ? ` · 👁️ ${r.views}` : ''}\n`;
+            out += `🔗 ${r.url}\n\n`;
+          });
+          out += `_Download audio: ${prefix}song <link>_`;
+          await m.reply(out.trim());
         } catch (e) {
-          await m.reply('\u274c YouTube search failed: ' + (e && e.message ? e.message : e));
+          await m.reply(
+            `❌ *Search failed:* ${e.message}\n\n🔗 Try directly:\nhttps://www.youtube.com/results?search_query=${encodeURIComponent(query)}`
+          );
         }
         break;
       }
@@ -118,26 +222,59 @@ module.exports = {
       case 'tiktok':
       case 'tt': {
         if (!query || !query.includes('tiktok.com')) {
-          return m.reply(`\u2753 Please send a valid TikTok video link!\nExample: *${prefix}tiktok https://vm.tiktok.com/xxxx/*`);
+          return m.reply(`❓ Please send a valid TikTok video link!\nExample: *${prefix}tiktok https://vm.tiktok.com/xxxx/*`);
         }
-        await m.react('\u23f3');
+        await m.react('⏳');
+
+        // 1) tikwm — fast, no-watermark, no auth.
+        try {
+          const info = await tikwmLookup(query);
+          if (info) {
+            if (info.images && info.images.length) {
+              for (const img of info.images.slice(0, 10)) {
+                await sock.sendMessage(m.chat, { image: { url: img } }, { quoted: m });
+              }
+              await m.react('✅');
+              return;
+            }
+            const src = info.hd || info.play;
+            if (src) {
+              const buf = await axios.get(src, {
+                responseType: 'arraybuffer',
+                timeout: 90000,
+                headers: { 'User-Agent': UA, Referer: 'https://www.tiktok.com/' },
+              });
+              await sock.sendMessage(m.chat, {
+                video: Buffer.from(buf.data),
+                mimetype: 'video/mp4',
+                fileName: 'tiktok.mp4',
+                caption: `🎵 *${info.title}*\n⚡ _Downloaded via Saqib-MD_`,
+              }, { quoted: m });
+              await m.react('✅');
+              return;
+            }
+          }
+        } catch (_) {
+          // fall through to yt-dlp
+        }
+
+        // 2) yt-dlp fallback
         let result = null;
         try {
           result = await ytdlp.downloadVideo(query, { height: 720 });
-          if (!result.ok) {
-            await m.react('\u274c');
-            return m.reply('\u26a0\ufe0f Could not download that TikTok video. It may be private or region-locked.');
-          }
+          if (!result.ok) throw new Error(result.error || 'download failed');
           await sock.sendMessage(m.chat, {
             video: { url: result.file },
             mimetype: 'video/mp4',
-            fileName: `${result.title}.mp4`,
-            caption: `\ud83c\udfb5 *TikTok No-Watermark*\n\u26a1 _Downloaded via Saqib-MD_`
+            fileName: `${result.title || 'tiktok'}.mp4`,
+            caption: `🎵 *TikTok No-Watermark*\n⚡ _Downloaded via Saqib-MD_`,
           }, { quoted: m });
-          await m.react('\u2705');
+          await m.react('✅');
         } catch (e) {
-          await m.react('\u274c');
-          await m.reply('\u26a0\ufe0f Could not download that TikTok video right now. Please try again later.');
+          await m.react('❌');
+          await m.reply(
+            `⚠️ *Could not download that TikTok video.*\n*Reason:* ${e.message || 'private or region-locked'}\n\nTry again with the full video link (not a photo post).`
+          );
         } finally {
           if (result && result.dir) ytdlp.cleanupDir(result.dir);
         }
@@ -203,10 +340,44 @@ module.exports = {
       }
 
       case 'apk': {
-        if (!query) return m.reply(`\u2753 Please provide an app name!\nExample: *${prefix}apk WhatsApp*`);
-        await m.react('\u23f3');
-        await m.reply(`\ud83d\udcf1 *APK search:* Please download *${query}* from a trusted source such as APKMirror or the official Play Store. Direct APK mirroring is disabled for safety.`);
-        await m.react('\u2139\ufe0f');
+        if (!query) return m.reply(`❓ Please provide an app name!\nExample: *${prefix}apk WhatsApp*`);
+        await m.react('⏳');
+        try {
+          const app = await aptoideLookup(query);
+          if (!app) {
+            await m.react('❌');
+            return m.reply(`❌ *App not found* on Aptoide for *${query}*.\nTry the exact app name, e.g. *${prefix}apk WhatsApp*.`);
+          }
+          await m.reply(
+            `📱 *── APK FOUND ──*\n\n` +
+              `📦 *Name:* ${app.name}\n` +
+              `🏷️ *Package:* ${app.package}\n` +
+              `🔢 *Version:* ${app.version}\n` +
+              `💾 *Size:* ${humanSize(app.size)}\n` +
+              (app.developer ? `👨‍💻 *Developer:* ${app.developer}\n` : '') +
+              `\n⬇️ _Downloading APK, please wait..._`
+          );
+
+          const buf = await axios.get(app.url, {
+            responseType: 'arraybuffer',
+            timeout: 180000,
+            maxContentLength: 300 * 1024 * 1024,
+            headers: { 'User-Agent': UA },
+          });
+          const file = Buffer.from(buf.data);
+          if (!file.length) throw new Error('empty APK download');
+
+          await sock.sendMessage(m.chat, {
+            document: file,
+            mimetype: 'application/vnd.android.package-archive',
+            fileName: `${app.name.replace(/[^a-zA-Z0-9._-]/g, '_')}_${app.version}.apk`,
+            caption: `📦 *${app.name}* v${app.version}\n💾 ${humanSize(file.length)}\n⚡ _Downloaded via Saqib-MD_`,
+          }, { quoted: m });
+          await m.react('✅');
+        } catch (e) {
+          await m.react('❌');
+          await m.reply(`❌ *APK download failed:* ${e.message || 'unknown error'}`);
+        }
         break;
       }
 

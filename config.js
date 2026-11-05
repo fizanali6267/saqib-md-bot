@@ -114,15 +114,67 @@ const getOwnerJid = (sock) => {
   return null;
 };
 
+const onlyDigits = (v) => String(v || '').split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+
+// Resolve any JID (LID or phone) to a plain phone-number string.
+// LID (`<15-digit>@lid`) is WhatsApp's privacy identifier and never matches a
+// real owner number, so it MUST be mapped back through lib/lid.js first.
+const resolveNumber = (jid) => {
+  if (!jid) return '';
+  const raw = String(jid);
+  if (raw.endsWith('@s.whatsapp.net')) return onlyDigits(raw);
+  try {
+    const lid = require('./lib/lid');
+    const resolved = lid.resolve(raw);
+    if (resolved) return onlyDigits(resolved);
+    // If we were handed a bare LID, try the LID form too.
+    if (raw.endsWith('@lid')) {
+      const asLid = lid.toLid ? lid.toLid(raw) : null;
+      if (asLid) {
+        const again = lid.resolve(asLid);
+        if (again) return onlyDigits(again);
+      }
+      return ''; // unresolved LID — cannot be trusted as a phone number
+    }
+  } catch (_) {}
+  const d = onlyDigits(raw);
+  // Real phone numbers with country code are 8-14 digits; a 15-digit value is
+  // an unresolved LID and must not be compared against owner numbers.
+  if (d.length >= 8 && d.length <= 14) return d;
+  return '';
+};
+
 const checkIsOwner = (m, sock) => {
+  if (!m) return false;
   if (m.fromMe) return true;
-  const botNumber = sock?.user?.id?.split(':')[0]?.split('@')[0];
-  const senderNumber = m.sender?.split('@')[0]?.split(':')[0];
-  if (botNumber && senderNumber === botNumber) return true;
-  const owners = Array.isArray(module.exports.OWNER_NUMBERS) && module.exports.OWNER_NUMBERS.length
+  const botNumber = onlyDigits(sock?.user?.id);
+  const owners = (Array.isArray(module.exports.OWNER_NUMBERS) && module.exports.OWNER_NUMBERS.length
     ? module.exports.OWNER_NUMBERS
-    : [module.exports.OWNER_NUMBER].filter(Boolean);
-  if (senderNumber && owners.includes(senderNumber)) return true;
+    : [module.exports.OWNER_NUMBER].filter(Boolean)
+  ).map(onlyDigits).filter(Boolean);
+
+  // Collect every identifier we have for the sender and try each one.
+  const candidates = [
+    m.sender,
+    m.senderLid,
+    m.key?.senderPn,
+    m.key?.participantPn,
+    m.key?.participant,
+    m.key?.senderLid,
+    m.key?.participantLid,
+    m.participant,
+  ].filter(Boolean);
+
+  const numbers = new Set();
+  for (const c of candidates) {
+    const n = resolveNumber(c);
+    if (n) numbers.add(n);
+  }
+
+  if (botNumber && numbers.has(botNumber)) return true;
+  for (const n of numbers) {
+    if (owners.includes(n)) return true;
+  }
   return false;
 };
 
