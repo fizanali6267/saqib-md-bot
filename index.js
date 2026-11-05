@@ -110,6 +110,7 @@ process.on('uncaughtException', (err) => {
 const config = require('./config');
 const { serialize } = require('./lib/serialize');
 const lid = require('./lib/lid');
+const identity = require('./lib/identity');
 const { useMongoDBAuthState } = require('./lib/mongoAuth');
 const { useFastAuthState } = require('./lib/fastAuthState');
 const { resolveAlias } = require('./lib/aliasMap');
@@ -807,6 +808,26 @@ async function startBot() {
   // forever.
   const originalSendMessage = sock.sendMessage.bind(sock);
   sock.sendMessage = async (jid, content, options = {}) => {
+    // ---- SELF-CHAT QUOTE GUARD (global) ---------------------------------
+    // WhatsApp mobile cannot resolve a quoted message inside your own
+    // "Message Yourself" chat. When any plugin passes `{ quoted: m }` there,
+    // the whole message is silently dropped and the user sees
+    // "Waiting for this message. This may take a while." instead of a reply.
+    //
+    // 50+ call sites across 18 plugins do `{ quoted: m }`, so the guard lives
+    // here instead of being patched plugin by plugin. Groups and normal DMs are
+    // untouched — quoting works fine there.
+    try {
+      const isGroupJid = String(jid || '').endsWith('@g.us');
+      if (!isGroupJid && options && options.quoted) {
+        const own = identity.ownIdentifiers(sock);
+        if (identity.isOwnJid(jid, own)) {
+          const { quoted, ...rest } = options;
+          options = rest;
+        }
+      }
+    } catch (_) {}
+
     let sent;
     try {
       sent = await originalSendMessage(jid, content, options);
