@@ -5,10 +5,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Karachi
 
 # System dependencies (ffmpeg/imagemagick/webp for media features, git for runtime helpers)
+# yt-dlp + yt-dlp-ejs: YouTube now requires solving JS signature/n-challenges.
+#   yt-dlp-ejs provides the solver, node (already in this image) is the runtime.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg imagemagick webp git ca-certificates curl tzdata python3 python3-pip && \
-    pip3 install --no-cache-dir --break-system-packages -U yt-dlp && \
+    pip3 install --no-cache-dir --break-system-packages -U yt-dlp yt-dlp-ejs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

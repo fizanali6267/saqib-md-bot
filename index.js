@@ -160,6 +160,43 @@ app.get('/selftest', async (req, res) => {
   }
 });
 
+// YouTube downloader diagnostics (owner only).
+// Usage: /ytcheck?key=<owner number>&q=song+name[&dl=1]
+app.get('/ytcheck', async (req, res) => {
+  try {
+    const key = String(req.query.key || '').replace(/[^0-9]/g, '');
+    const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+    if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
+
+    const ytdlp = require('./lib/ytdlp');
+    const q = String(req.query.q || 'arijit singh kesariya');
+    const out = {
+      query: q,
+      cookiesAvailable: ytdlp.cookiesAvailable(),
+      cookieFile: ytdlp.resolveCookieFile(),
+      ytdlpVersion: require('child_process').execSync('yt-dlp --version').toString().trim(),
+      info: await ytdlp.getInfo(q)
+    };
+
+    if (req.query.dl === '1') {
+      const t0 = Date.now();
+      const r = await ytdlp.downloadAudio(q, { bitrate: '128' });
+      out.download = {
+        ok: r.ok,
+        ms: Date.now() - t0,
+        client: r.client,
+        cookies: r.cookies,
+        error: r.error,
+        bytes: r.ok && r.file ? fs.statSync(r.file).size : 0
+      };
+      if (r.ok) ytdlp.cleanupDir(r.dir);
+    }
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // Load all command plugins with explicit fallback to guarantee 100% discovery
 const plugins = [];
 const defaultPluginFiles = [
