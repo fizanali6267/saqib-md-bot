@@ -299,7 +299,7 @@ module.exports = {
         await m.react('❌').catch(() => null);
         return m.reply(
           `⚠️ *Could not download this TikTok video.*\n\n` +
-          `TikTok is blocking the download service right now. Please try again in a minute.`
+          `Please make sure the link is correct and try again. If the problem continues, report it to the owner.`
         );
       }
 
@@ -329,11 +329,11 @@ module.exports = {
       await m.react('⚠️').catch(() => null);
       const tag = input.replace(/\s+/g, '');
       return m.reply(
-        `⚠️ *TikTok search is temporarily unavailable.*\n\n` +
-        `You can still browse directly:\n` +
+        `🔎 *No results found for that search.*\n\n` +
+        `Please try a different keyword, or browse directly:\n` +
         `🔗 https://www.tiktok.com/search?q=${encodeURIComponent(input)}\n` +
         `🔗 https://www.tiktok.com/tag/${encodeURIComponent(tag)}\n\n` +
-        `_Please try the command again in a few minutes._`
+        `_If this keeps happening, please report it to the owner._`
       );
     }
 
