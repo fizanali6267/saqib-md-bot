@@ -160,6 +160,45 @@ app.get('/selftest', async (req, res) => {
   }
 });
 
+// ---- Live YouTube cookie refresh (owner only) -----------------------------
+// Cookies rotate frequently, which is the #1 cause of "Sign in to confirm
+// you're not a bot". This lets the owner push fresh cookies to the persistent
+// volume without a redeploy. Accepts raw Netscape text or base64 via the
+// request body (?body) or JSON { "cookies": "..." }.
+app.post('/setcookies', (req, res) => {
+  try {
+    const key = String(req.query.key || '').replace(/[^0-9]/g, '');
+    const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+    if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
+
+    let body = '';
+    if (req.body && typeof req.body === 'object') body = req.body.cookies || req.body.data || '';
+    else if (typeof req.body === 'string') body = req.body;
+    if (!body && req.query.data) body = String(req.query.data);
+    body = String(body || '');
+    if (!body.trim()) return res.status(400).json({ ok: false, error: 'empty body' });
+
+    // Accept base64-encoded cookies.
+    if (!/# (Netscape|HTTP Cookie File)/.test(body) && /^[A-Za-z0-9+/=\s]+$/.test(body.slice(0, 200))) {
+      try {
+        const decoded = Buffer.from(body, 'base64').toString('utf8');
+        if (decoded.includes('\t')) body = decoded;
+      } catch (_) {}
+    }
+    body = body.replace(/\\n/g, '\n');
+    if (!body.includes('\t')) return res.status(400).json({ ok: false, error: 'not a valid Netscape cookies.txt' });
+
+    const dir = path.join(__dirname, 'session');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'cookies.txt'), body, { mode: 0o600 });
+    console.log(`\u{1F36A} YouTube cookies refreshed (${body.length} bytes)`);
+    res.json({ ok: true, bytes: body.length, path: path.join(dir, 'cookies.txt') });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+
 // YouTube downloader diagnostics (owner only).
 // Usage: /ytcheck?key=<owner number>&q=song+name[&dl=1]
 app.get('/ytcheck', async (req, res) => {
