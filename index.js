@@ -211,7 +211,10 @@ app.get('/ytcheck', async (req, res) => {
       const cookieFile = ytdlp.resolveCookieFile();
       const client = String(req.query.client || '');
       const args = ['--no-playlist', '--no-warnings', '--js-runtimes', 'node', '--socket-timeout', '20'];
+      if (req.query.verbose === '1') args.push('-v');
       if (client) args.push('--extractor-args', 'youtube:player_client=' + client);
+      const potUrl = process.env.YT_POT_BASE_URL || 'http://pot-provider.railway.internal:4416';
+      if (req.query.nopot !== '1') args.push('--extractor-args', 'youtubepot-bgutilhttp:base_url=' + potUrl);
       if (cookieFile && req.query.nc !== '1') args.push('--cookies', cookieFile);
       args.push('-F', /^https?:\/\//i.test(q) ? q : 'ytsearch1:' + q);
       const r = spawnSync('yt-dlp', args, { timeout: 90000, encoding: 'utf8' });
