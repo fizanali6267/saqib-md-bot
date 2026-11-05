@@ -51,20 +51,83 @@ function qs(params) {
   return sp.toString();
 }
 
+/**
+ * Extract the first complete JSON object/array from a text blob.
+ * r.jina.ai wraps the payload in a markdown envelope, so we cannot just
+ * JSON.parse the whole body.
+ */
+function extractJson(text) {
+  const t = String(text || '');
+  const start = t.search(/[\[{]/);
+  if (start === -1) throw new Error('no JSON in response');
+  const open = t[start];
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) return JSON.parse(t.slice(start, i + 1));
+    }
+  }
+  throw new Error('unterminated JSON');
+}
+
+/**
+ * Final fallback. Cloudflare blocks this container's IP outright (HTTP 403),
+ * and Node/curl TLS handshakes are rejected too, so we route the request
+ * through r.jina.ai which fetches it from its own IP and returns the body.
+ */
+function jinaJson(url, timeoutSec) {
+  return new Promise((resolve, reject) => {
+    const proxied = 'https://r.jina.ai/' + url;
+    execFile('curl', [
+      '-sS', '--compressed',
+      '--max-time', String((timeoutSec || 20) + 10),
+      '-A', UA,
+      proxied
+    ], { maxBuffer: 8 * 1024 * 1024, timeout: ((timeoutSec || 20) + 10) * 1000 + 5000 }, (err, stdout) => {
+      if (err) return reject(err);
+      try {
+        resolve(extractJson(stdout));
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
+
 async function getJson(baseUrl, params, timeoutSec) {
   const url = baseUrl + '?' + qs(params);
+
+  // 1) Direct HTTPS (fastest, works on most networks)
   try {
     const res = await axios.get(url, {
       timeout: (timeoutSec || 20) * 1000,
       headers: { 'User-Agent': UA, Accept: 'application/json', Referer: 'https://tikwm.com/' },
       validateStatus: () => true
     });
-    if (res.status === 200 && res.data && typeof res.data === 'object') return res.data;
+    if (res.status === 200 && res.data && typeof res.data === 'object' && !res.data.error) return res.data;
     throw new Error('HTTP ' + res.status);
-  } catch (e) {
-    // TLS / Cloudflare fallback
-    return curlJson(url, timeoutSec);
-  }
+  } catch (_) { /* fall through */ }
+
+  // 2) curl (different TLS stack, still our own IP)
+  try {
+    return await curlJson(url, timeoutSec);
+  } catch (_) { /* fall through */ }
+
+  // 3) Proxy through r.jina.ai (different egress IP, bypasses IP blocks)
+  return jinaJson(url, timeoutSec);
 }
 
 const PROVIDERS = [  {
