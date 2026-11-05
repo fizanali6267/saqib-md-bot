@@ -101,9 +101,17 @@ router.get('/', async (req, res) => {
       .filter(Boolean);
     const allowed = new Set([...owners, ...allowlist]);
     if (allowed.size > 0 && !allowed.has(num)) {
+      console.log(`⛔ Pairing denied for ${num} (allowed: ${[...allowed].join(', ')})`);
       return res.status(403).json({
         status: 'error',
-        message: 'Access Denied: Only the configured Bot Owner can link to this bot instance. Unauthorized session overwriting is blocked.'
+        message:
+          `Access Denied: ${num} is not allowed to link to this bot instance.\n\n` +
+          `Allowed number(s): ${[...allowed].join(', ')}\n\n` +
+          `Owner: to link a different number, either\n` +
+          `  • add it to the PAIRING_ALLOWED_NUMBERS variable (comma separated), or\n` +
+          `  • set ALLOW_PUBLIC_PAIRING=true, or\n` +
+          `  • run .pair <number> from the bot chat (owner only).`,
+        allowed: [...allowed]
       });
     }
   }
