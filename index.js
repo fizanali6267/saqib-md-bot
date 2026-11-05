@@ -145,6 +145,20 @@ app.get('/ttcheck', async (req, res) => {
     const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
     if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
     const q = String(req.query.q || 'cricket');
+
+    // Raw probe: /ttcheck?key=..&raw=<urlencoded url>  -> runs curl and shows
+    // the HTTP status plus the first bytes, so network-level blocks are visible.
+    if (req.query.raw) {
+      const { execFileSync } = require('child_process');
+      const target = String(req.query.raw);
+      try {
+        const out = execFileSync('curl', ['-sS', '-o', '/dev/null', '-w', 'status=%{http_code} ip=%{remote_ip} tls=%{ssl_verify_result} time=%{time_total}', '--max-time', '20', '-A', 'Mozilla/5.0', target], { encoding: 'utf8', timeout: 25000 });
+        return res.json({ ok: true, raw: target, probe: out.trim() });
+      } catch (e) {
+        return res.json({ ok: false, raw: target, error: String(e.message).slice(0, 300) });
+      }
+    }
+
     const t0 = Date.now();
     const plugin = require('./plugins/tiktok');
     const r = await plugin._search(q, 5);
