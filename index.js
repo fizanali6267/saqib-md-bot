@@ -666,19 +666,35 @@ async function startBot() {
     ? makeInMemoryStore({ logger: pino({ level: 'silent' }) })
     : null;
 
-  // Group metadata cache: avoids a network round-trip on every group message
+  // Group metadata cache: avoids a network round-trip on every group message.
+  // In a 600-member group a fresh `groupMetadata()` per message is what made
+  // the bot fall minutes behind (and then stop answering altogether).
   const groupMetadataCache = new Map();
+  const groupSizeCache = new Map();
+  const GROUP_META_TTL = 10 * 60 * 1000;
+
+  const rememberGroup = (jid, data) => {
+    if (!jid || !data) return data;
+    groupMetadataCache.set(jid, { data, at: Date.now() });
+    if (Array.isArray(data.participants)) groupSizeCache.set(jid, data.participants.length);
+    return data;
+  };
+
   const cachedGroupMetadata = async (jid) => {
     const hit = groupMetadataCache.get(jid);
-    if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.data;
+    if (hit && Date.now() - hit.at < GROUP_META_TTL) return hit.data;
     try {
       const data = await currentSock.groupMetadata(jid);
-      groupMetadataCache.set(jid, { data, at: Date.now() });
-      return data;
+      return rememberGroup(jid, data);
     } catch (_) {
+      // Serve stale data rather than nothing: sending a message needs a
+      // participant list, and a 10-minute-old list is far better than a
+      // failed send.
       return hit?.data;
     }
   };
+
+  const groupSize = (jid) => groupSizeCache.get(jid) || 0;
 
   const sock = makeWASocket({
     version,
@@ -691,11 +707,11 @@ async function startBot() {
     shouldSyncHistoryMessage: () => false,
     generateHighQualityLinkPreview: false,
     markOnlineOnConnect: false,
-    connectTimeoutMs: 20000,
-    defaultQueryTimeoutMs: 60000,
+    connectTimeoutMs: 30000,
+    defaultQueryTimeoutMs: 120000,
     keepAliveIntervalMs: 30000,
     retryRequestDelayMs: 250,
-    maxMsgRetryCount: 3,
+    maxMsgRetryCount: 5,
     // Issue 1 Fix: keeps the retry counter in RAM so Baileys can complete the
     // decrypt retry handshake instead of stalling on "Waiting for this message".
     msgRetryCounterCache,
@@ -727,6 +743,38 @@ async function startBot() {
   // Learn LID -> phone-number pairs from contacts, history and group members.
   try { lid.bind(sock); } catch (_) {}
 
+  // ---- Own identity mapping (critical for LID groups) ---------------------
+  // `creds.me` carries BOTH the phone number and the LID. Registering the pair
+  // means our own LID resolves to our phone number everywhere (owner checks,
+  // admin checks, `fromMe` detection in LID-addressed groups).
+  try {
+    const me = state.creds?.me || sock.user;
+    if (me?.lid && me?.id) {
+      lid.addPair(me.lid, me.id);
+      console.log(`🪪 Own identity: ${me.id}  <->  ${me.lid}`);
+    }
+  } catch (_) {}
+
+  // WhatsApp announces LID<->phone pairs on this event. Learning them here is
+  // what makes `@lid` senders resolve to real numbers over time.
+  try {
+    sock.ev.on('chats.phoneNumberShare', (x) => {
+      if (x?.lid && x?.jid) lid.addPair(x.lid, x.jid);
+    });
+  } catch (_) {}
+
+  // Keep the group caches warm so a big group never triggers a metadata fetch
+  // on the hot path (that fetch is what stalled 600-member groups).
+  try {
+    sock.ev.on('groups.upsert', (gs) => { for (const g of gs || []) rememberGroup(g?.id, g); });
+    sock.ev.on('groups.update', (gs) => { for (const g of gs || []) rememberGroup(g?.id, g); });
+    sock.ev.on('group-participants.update', async (u) => {
+      if (!u?.id) return;
+      groupMetadataCache.delete(u.id); // force a refresh, size changed
+      cachedGroupMetadata(u.id).catch(() => null);
+    });
+  } catch (_) {}
+
   currentSock = sock;
   clearTimeout(guardTimer);
   isStarting = false; // socket built — release the creation guard
@@ -742,7 +790,20 @@ async function startBot() {
   // forever.
   const originalSendMessage = sock.sendMessage.bind(sock);
   sock.sendMessage = async (jid, content, options = {}) => {
-    const sent = await originalSendMessage(jid, content, options);
+    let sent;
+    try {
+      sent = await originalSendMessage(jid, content, options);
+    } catch (err) {
+      // Big groups fail the first send while Baileys establishes sessions /
+      // distributes sender keys for hundreds of devices. One short retry fixes
+      // the common "bot never replies in this group" case.
+      const msg = String(err?.message || err);
+      const retryable = /timeout|timed out|ECONNRESET|socket|closed|rate|429|500|503|No metadata|assertSessions|Bad MAC/i.test(msg);
+      if (!retryable) throw err;
+      console.log(`↻ sendMessage retry (${jid}): ${msg.slice(0, 120)}`);
+      await new Promise((r) => setTimeout(r, 1500));
+      sent = await originalSendMessage(jid, content, options);
+    }
     try {
       if (sent?.key?.id) {
         botSentMessageIds.add(sent.key.id);
@@ -818,6 +879,23 @@ async function startBot() {
         console.log(`🔗 LID map: ${lid.size()} pairs known`);
       } catch (_) {}
 
+      // Pre-warm every group's metadata in the background. One bulk query is
+      // far cheaper than a per-message fetch, and it means a 600-member group
+      // never blocks the message loop.
+      setTimeout(async () => {
+        try {
+          const all = await sock.groupFetchAllParticipating();
+          let n = 0;
+          for (const [jid, meta] of Object.entries(all || {})) {
+            rememberGroup(jid, meta);
+            n++;
+          }
+          console.log(`🗂️  Pre-warmed metadata for ${n} groups`);
+        } catch (e) {
+          console.log(`⚠️  Group pre-warm skipped: ${e?.message || e}`);
+        }
+      }, 6000);
+
       // Always Online Heartbeat Loop (Cleaned up on reconnect)
       if (onlinePresenceInterval) clearInterval(onlinePresenceInterval);
       onlinePresenceInterval = setInterval(async () => {
@@ -857,6 +935,28 @@ async function startBot() {
     }
   });
 
+  // ------------------------------------------------------------------------
+  // Auto-feature throttling
+  // ------------------------------------------------------------------------
+  // In a 600-member group a reaction on *every* message is hundreds of API
+  // calls a minute. WhatsApp throttles the account and the bot then looks
+  // completely dead (no command replies at all). Small groups are unaffected.
+  const autoReactLast = new Map();
+  const shouldAutoReact = (m) => {
+    if (!m) return false;
+    if (!m.isGroup) return true;
+    const size = groupSize(m.chat);
+    // Unknown size (metadata not fetched yet) -> behave normally.
+    if (size && size > 150) {
+      const last = autoReactLast.get(m.chat) || 0;
+      const gap = size > 400 ? 15000 : 6000;
+      if (Date.now() - last < gap) return false;
+      autoReactLast.set(m.chat, Date.now());
+      if (autoReactLast.size > 2000) autoReactLast.clear();
+    }
+    return true;
+  };
+
   // Message Handler
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     lastActivityAt = Date.now();
@@ -874,28 +974,25 @@ async function startBot() {
 
       // 'append' also carries offline/stale messages after a reconnect. Only
       // act on recent ones so old commands are never re-executed.
+      const __ts = Number(rawMsg.messageTimestamp || 0) * 1000;
       if (type === 'append') {
-        const ts = Number(rawMsg.messageTimestamp || 0) * 1000;
-        if (ts && Date.now() - ts > 120000) continue;
+        if (__ts && Date.now() - __ts > 120000) continue;
+      } else if (__ts && Date.now() - __ts > 5 * 60 * 1000) {
+        // A busy group can hand us a backlog. Replaying a 5-minute-old command
+        // floods the chat and makes the bot look broken; drop it.
+        continue;
       }
 
       const __t0 = Date.now();
       const m = serialize(sock, rawMsg);
 
-      // Safety net for the LID addressing issue: if the chat is still a LID
-      // (no remoteJidAlt was provided), resolve it to the phone-number JID.
-      // Replying to a LID is what makes the phone show
-      // "Waiting for this message. This may take a while."
-      if (m.chat && m.chat.endsWith('@lid')) {
-        try {
-          const pn = lid.resolve(m.chat) || await lid.probe(sock, m.chat);
-          if (pn) {
-            m.chat = pn;
-            console.log(`🔗 LID ${m.rawChat} -> ${pn}`);
-          } else {
-            console.log(`⚠️  Unknown LID ${m.chat} (reply may not decrypt)`);
-          }
-        } catch (_) {}
+      // NOTE: `m.chat` is now always the ORIGINAL remoteJid (which may be a
+      // `@lid`). Baileys translates LID -> own-LID correctly on send, so we
+      // must NOT rewrite it into a phone-number JID. Doing that was the cause
+      // of "Waiting for this message. This may take a while." in DMs and in
+      // "Message Yourself". Only log the mapping for diagnostics.
+      if (m.rawChat && m.rawChat.endsWith('@lid') && m.sender !== m.rawChat) {
+        console.log(`🔗 LID ${m.rawChat} -> ${m.sender}`);
       }
 
       // Private Mode Silence Guard (EARLY)
@@ -1042,7 +1139,7 @@ async function startBot() {
 
       // Anti-Link Enforcement in Groups
       if (m.isGroup && config.ANTI_LINK && m.body.includes('chat.whatsapp.com/')) {
-        const groupMeta = await sock.groupMetadata(m.chat).catch(() => null);
+        const groupMeta = await cachedGroupMetadata(m.chat).catch(() => null);
         const botId = (sock.user.id.split('@')[0].split(':')[0]) + '@s.whatsapp.net';
         const isBotAdmin = groupMeta?.participants.find(p => p.id === botId)?.admin;
         const isSenderAdmin = groupMeta?.participants.find(p => p.id === m.sender)?.admin || m.fromMe;
@@ -1086,7 +1183,7 @@ async function startBot() {
       // AUTO-REACT: runs on EVERY message type — text, photo, video, sticker,
       // voice note. Previously gated on `m.body`, so media messages (empty
       // body) never got a reaction.
-      if (config.AUTO_REACT) {
+      if (config.AUTO_REACT && shouldAutoReact(m)) {
         try {
           let reactEmoji = null;
           if (config.AUTO_REACT_MODE === 'mirror') {

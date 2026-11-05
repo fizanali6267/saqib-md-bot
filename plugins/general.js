@@ -226,6 +226,8 @@ module.exports = {
 │ ◦ ${prefix}block
 │ ◦ ${prefix}unblock
 │ ◦ ${prefix}blocklist
+│ ◦ ${prefix}myid
+│ ◦ ${prefix}groupdebug
 │ ◦ ${prefix}broadcast
 │ ◦ ${prefix}join
 │ ◦ ${prefix}pair

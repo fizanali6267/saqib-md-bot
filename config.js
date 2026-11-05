@@ -111,6 +111,12 @@ module.exports = {
 const getOwnerJid = (sock) => {
   const num = module.exports.OWNER_NUMBER;
   if (num && num.trim() !== '') {
+    const d = String(num).replace(/[^0-9]/g, '');
+    // If the bot runs on the owner's own number, WhatsApp now addresses that
+    // account by LID. Sending to the phone-number JID in that case produces
+    // "Waiting for this message. This may take a while." on the owner's phone.
+    const botNum = String(sock?.user?.id || '').split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+    if (sock?.user?.lid && d && d === botNum) return sock.user.lid;
     return `${num}@s.whatsapp.net`;
   }
   if (sock?.user?.id) {
