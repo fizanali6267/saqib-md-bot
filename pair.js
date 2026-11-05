@@ -201,10 +201,18 @@ router.get('/', async (req, res) => {
 
         // The pairing code may only be requested AFTER the Noise handshake has
         // completed. Requesting it too early (the old code used a blind 3.5s
-        // sleep) makes WhatsApp hand out a code that is bound to a socket which
-        // is already being torn down -> "Logging in…" then "Could not link
-        // device". Resolve the waiter as soon as the server talks to us.
-        if (qr || connection === 'connecting' || connection === 'open') {
+        // sleep) makes WhatsApp hand out a code bound to a socket that is
+        // already being torn down -> "Logging in…" then "Could not link
+        // device".
+        //
+        // IMPORTANT: `connection === 'connecting'` is emitted the instant the
+        // socket object is created — long before the WebSocket/Noise handshake
+        // finishes. Gating on it made requestPairingCode() run against a closed
+        // transport and throw "Connection Closed". The ONLY reliable signal
+        // that the encrypted channel is live is the `qr` event (Baileys emits
+        // it after a successful handshake when no device is registered), or a
+        // full `open`. Never resolve on 'connecting'.
+        if (qr || connection === 'open') {
           const w = pairReadyWaiters.get(num);
           if (w) { pairReadyWaiters.delete(num); w(); }
         }
@@ -309,6 +317,11 @@ router.get('/', async (req, res) => {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           console.log(`Pairing socket closed for ${num} with code: ${statusCode}`);
 
+          // Unblock the readiness waiter so a dead socket fails fast instead of
+          // hanging the HTTP request for the full 25s handshake window.
+          const w = pairReadyWaiters.get(num);
+          if (w) { pairReadyWaiters.delete(num); w(); }
+
           // Issue 4 Fix: On close code 515 (restartRequired), recreate the socket so registration completes
           if (statusCode === DisconnectReason.restartRequired || statusCode === 515) {
             console.log(`🔄 Pairing restart required (code 515) for ${num}. Recreating socket to complete authentication...`);
@@ -354,19 +367,51 @@ router.get('/', async (req, res) => {
       });
     }
 
+    // If the waiter was released by a 'close' event the transport is already
+    // gone — do not attempt to push a node through it.
+    if (!sock.ws || !sock.ws.isOpen) {
+      closePairSocket(num, 'Transport closed before handshake');
+      pairingStatusMap.set(num, 'error');
+      return res.status(503).json({
+        status: 'error',
+        message: 'WhatsApp connection dropped during setup. Please retry in 10 seconds.'
+      });
+    }
+
     if (!state.creds.registered) {
-      // Request the code exactly once. A second call invalidates the first
-      // code, which is another way to get "Could not link device".
-      let code;
-      try {
-        code = await sock.requestPairingCode(num);
-      } catch (e) {
-        console.error('requestPairingCode failed:', e?.message || e);
+      // Give the encrypted channel a moment to fully settle after the qr event
+      // before we push a node through it.
+      await delay(700);
+
+      // Request the code with a short retry loop. A single transient
+      // "Connection Closed" must not surface as "Could not link device" to the
+      // user — the socket is usually still alive and a retry succeeds.
+      let code = null;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          code = await sock.requestPairingCode(num);
+          if (code) break;
+        } catch (e) {
+          lastErr = e;
+          console.error(`requestPairingCode attempt ${attempt}/3 failed:`, e?.message || e);
+          const transient = /closed|not open|connection|timeout|ECONNRESET|stream/i.test(
+            String(e?.message || e)
+          );
+          if (!transient || attempt === 3) break;
+          await delay(2000);
+        }
+      }
+
+      if (!code) {
         closePairSocket(num, 'requestPairingCode failed');
         pairingStatusMap.set(num, 'error');
         return res.status(502).json({
           status: 'error',
-          message: 'WhatsApp refused the pairing request. Please wait 30 seconds and try again.'
+          message:
+            'WhatsApp refused the pairing request (' +
+            (lastErr?.message || 'no code returned') +
+            '). Please wait 30 seconds and try again.'
         });
       }
       const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
