@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg imagemagick webp git ca-certificates curl tzdata python3 python3-pip && \
-    pip3 install --no-cache-dir --break-system-packages -U yt-dlp yt-dlp-ejs && \
+    pip3 install --no-cache-dir --break-system-packages -U yt-dlp yt-dlp-ejs bgutil-ytdlp-pot-provider && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

@@ -174,9 +174,23 @@ app.get('/ytcheck', async (req, res) => {
       query: q,
       cookiesAvailable: ytdlp.cookiesAvailable(),
       cookieFile: ytdlp.resolveCookieFile(),
+      potBaseUrl: process.env.YT_POT_BASE_URL || 'http://pot-provider.railway.internal:4416',
       ytdlpVersion: require('child_process').execSync('yt-dlp --version').toString().trim(),
       info: await ytdlp.getInfo(q)
     };
+
+    try {
+      const http = require('http');
+      out.potPing = await new Promise((resolve) => {
+        const req2 = http.get(out.potBaseUrl + '/ping', { timeout: 8000 }, (r2) => {
+          let b = '';
+          r2.on('data', (c) => { b += c; });
+          r2.on('end', () => resolve({ status: r2.statusCode, body: b.slice(0, 200) }));
+        });
+        req2.on('error', (e) => resolve({ error: e.message }));
+        req2.on('timeout', () => { req2.destroy(); resolve({ error: 'timeout' }); });
+      });
+    } catch (e) { out.potPing = { error: e.message }; }
 
     if (req.query.dl === '1') {
       const t0 = Date.now();
