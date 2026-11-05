@@ -266,9 +266,18 @@ app.get('/settings', (req, res) => {
 app.get('/selftest', async (req, res) => {
   try {
     if (!currentSock) return res.status(503).json({ ok: false, error: 'socket not connected' });
-    const num = String(req.query.jid || config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
-    if (!num) return res.status(400).json({ ok: false, error: 'no jid' });
-    const jid = `${num}@s.whatsapp.net`;
+    // Accept either a bare number or a FULL jid (e.g. 71550548049938@lid or
+    // 120363426511617473@g.us) so the exact chat that appears broken can be
+    // probed directly.
+    const rawJid = String(req.query.jid || '').trim();
+    let jid;
+    if (rawJid.includes('@')) {
+      jid = rawJid;
+    } else {
+      const num = String(rawJid || config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+      if (!num) return res.status(400).json({ ok: false, error: 'no jid' });
+      jid = `${num}@s.whatsapp.net`;
+    }
     const t0 = Date.now();
     const sent = await currentSock.sendMessage(jid, {
       text: `🧪 *SELF-TEST*\nBot is able to deliver to this chat.\n${new Date().toISOString()}`
