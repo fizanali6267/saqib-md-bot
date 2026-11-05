@@ -191,6 +191,27 @@ app.get('/ytcheck', async (req, res) => {
       };
       if (r.ok) ytdlp.cleanupDir(r.dir);
     }
+
+    if (req.query.raw === '1') {
+      const { spawnSync } = require('child_process');
+      const cookieFile = ytdlp.resolveCookieFile();
+      const client = String(req.query.client || '');
+      const args = ['--no-playlist', '--no-warnings', '--js-runtimes', 'node', '--socket-timeout', '20'];
+      if (client) args.push('--extractor-args', 'youtube:player_client=' + client);
+      if (cookieFile && req.query.nc !== '1') args.push('--cookies', cookieFile);
+      args.push('-F', /^https?:\/\//i.test(q) ? q : 'ytsearch1:' + q);
+      const r = spawnSync('yt-dlp', args, { timeout: 90000, encoding: 'utf8' });
+      out.raw = {
+        args: args.join(' '),
+        code: r.status,
+        stderr: String(r.stderr || '').slice(-2500),
+        stdout: String(r.stdout || '').slice(-2500)
+      };
+      out.cookiePreview = cookieFile && fs.existsSync(cookieFile)
+        ? fs.readFileSync(cookieFile, 'utf8').split('\n').slice(0, 3).join('\n')
+        : null;
+      out.cookieBytes = cookieFile && fs.existsSync(cookieFile) ? fs.statSync(cookieFile).size : 0;
+    }
     res.json(out);
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
