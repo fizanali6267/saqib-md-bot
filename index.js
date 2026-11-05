@@ -153,7 +153,9 @@ app.post('/probe', async (req, res) => {
         responseType: 'text', transformResponse: [(d) => d],
       });
       const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
-      return res.json({ ok: r.status >= 200 && r.status < 400, status: r.status, ms: Date.now() - t0, len: text.length, body: String(text).slice(0, max) });
+      const hdrs = {};
+      for (const [k, v] of Object.entries(r.headers || {})) if (k === 'set-cookie' || k === 'content-type' || k === 'content-length' || k === 'location') hdrs[k] = v;
+      return res.json({ ok: r.status >= 200 && r.status < 400, status: r.status, ms: Date.now() - t0, len: text.length, headers: hdrs, body: String(text).slice(0, max) });
     } catch (e) {
       return res.json({ ok: false, status: e.response?.status || null, ms: Date.now() - t0, error: String(e.message).slice(0, 200) });
     }
