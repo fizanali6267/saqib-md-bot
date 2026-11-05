@@ -72,6 +72,77 @@ function cleanSongQuery(title) {
 }
 
 // ---------------------------------------------------------------------------
+// Instagram fallback that needs NO cookies and NO login.
+//
+// Instagram serves most reels/posts only to logged-in clients, so yt-dlp
+// frequently returns "login required". Public embed proxies (ddinstagram /
+// kkinstagram) render the media URL into their HTML, which we can read and
+// fetch directly. This is the cookie-free path the user asked for.
+// ---------------------------------------------------------------------------
+async function igFallback(url) {
+  const m = String(url).match(/instagram\.com\/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  const code = m[1];
+  const proxies = [
+    `https://www.ddinstagram.com/reel/${code}/`,
+    `https://www.ddinstagram.com/p/${code}/`,
+    `https://www.kkinstagram.com/reel/${code}/`,
+    `https://www.kkinstagram.com/p/${code}/`,
+    `https://www.instagram.com/p/${code}/embed/captioned/`,
+  ];
+  for (const p of proxies) {
+    try {
+      const res = await axios.get(p, {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+        timeout: 20000,
+        maxRedirects: 5,
+        validateStatus: () => true,
+      });
+      if (res.status !== 200) continue;
+      const html = String(res.data || '');
+      // Video first (reels), then image (photo posts).
+      const vid =
+        html.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/i) ||
+        html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video"/i) ||
+        html.match(/"video_url":"([^"]+)"/);
+      const img =
+        html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i) ||
+        html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i);
+      const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]*)"/i);
+      const clean = (u) => (u ? u.replace(/&amp;/g, '&').replace(/\\u0026/g, '&') : null);
+      if (vid && clean(vid[1])) {
+        return { type: 'video', url: clean(vid[1]), title: (titleMatch && titleMatch[1]) || 'Instagram Reel' };
+      }
+      if (img && clean(img[1])) {
+        return { type: 'image', url: clean(img[1]), title: (titleMatch && titleMatch[1]) || 'Instagram Post' };
+      }
+    } catch (_) { /* try next proxy */ }
+  }
+
+  // Last resort: Instagram's public oEmbed endpoint needs no login and always
+  // returns at least a thumbnail for a public post. Better than an error.
+  try {
+    const oe = await axios.get('https://www.instagram.com/api/v1/oembed/', {
+      params: { url: `https://www.instagram.com/reel/${code}/` },
+      headers: { 'User-Agent': UA },
+      timeout: 20000,
+      validateStatus: () => true,
+    });
+    const d = oe.data || {};
+    if (d.thumbnail_url) {
+      return {
+        type: 'image',
+        url: d.thumbnail_url,
+        title: d.author_name ? `Instagram @${d.author_name}` : 'Instagram Post',
+        note: 'Video requires an Instagram login, so only the preview image could be fetched.',
+      };
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // resolveSong — find a full-length audio file for any song name, worldwide.
 //
 // Order of preference:
@@ -533,8 +604,42 @@ module.exports = {
         try {
           result = await ytdlp.downloadVideo(query, { height: 720 });
           if (!result.ok) {
+            // Cookie-free fallback: public embed proxies expose the media URL.
+            const fb = await igFallback(query).catch(() => null);
+            if (fb && fb.url) {
+              const media = await axios.get(fb.url, {
+                responseType: 'arraybuffer',
+                timeout: 120000,
+                maxContentLength: 200 * 1024 * 1024,
+                headers: { 'User-Agent': UA, Referer: 'https://www.instagram.com/' },
+              });
+              const buf = Buffer.from(media.data);
+              if (buf.length) {
+                await sock.sendMessage(
+                  m.chat,
+                  fb.type === 'video'
+                    ? {
+                        video: buf,
+                        mimetype: 'video/mp4',
+                        fileName: 'instagram.mp4',
+                        caption: `\ud83d\udcf8 *Instagram Reel*\n\u26a1 _Downloaded via Saqib-MD_`,
+                      }
+                    : {
+                        image: buf,
+                        caption: `\ud83d\udcf8 *Instagram Post*\n\u26a1 _Downloaded via Saqib-MD_` + (fb.note ? `\n\n\u2139\ufe0f ${fb.note}` : ''),
+                      },
+                  { quoted: m }
+                );
+                await m.react('\u2705');
+                return;
+              }
+            }
             await m.react('\u274c');
-            return m.reply('\u26a0\ufe0f Could not download that Instagram media. It may be private or login-locked.');
+            return m.reply(
+              '\u26a0\ufe0f Could not download that Instagram media.\n\n' +
+                '_Instagram now requires a login for most reels. This one is not reachable through any public route._\n' +
+                'Try a public post/reel, or send a TikTok/YouTube link instead.'
+            );
           }
           await sock.sendMessage(m.chat, {
             video: { url: result.file },
@@ -544,6 +649,7 @@ module.exports = {
           }, { quoted: m });
           await m.react('\u2705');
         } catch (e) {
+          console.error('\u274c ig failed:', e && e.message ? e.message : e);
           await m.react('\u274c');
           await m.reply('\u26a0\ufe0f Could not download that Instagram media right now. Please try again later.');
         } finally {

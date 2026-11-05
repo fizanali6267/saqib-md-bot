@@ -31,6 +31,33 @@ module.exports = {
       const isVideo = quotedType.includes('video') || quotedMime.startsWith('video/');
       const isMedia = isImage || isVideo;
 
+      // Diagnostics: without this a failed .vv was completely silent.
+      try {
+        const voCache = require('../lib/viewOnceCache');
+        console.log(
+          `🔎 ${command}: quoted=${!!m.quoted} id=${m.quoted?.id || '-'} type=${quotedType || '-'} ` +
+          `isVO=${isViewOnce} isMedia=${isMedia} cached=${m.quoted ? voCache.has(m.quoted.id) : false} ` +
+          `chatCache=${voCache.latestForChat(m.chat) ? 'yes' : 'no'}`
+        );
+      } catch (_) {}
+
+      // Fallback: no reply, but we cached a view-once in this chat recently.
+      if (!m.quoted) {
+        try {
+          const voCache = require('../lib/viewOnceCache');
+          const latest = voCache.latestForChat(m.chat);
+          if (latest && latest.buffer && latest.buffer.length) {
+            const mt = latest.type === 'video' ? 'video' : 'image';
+            await sock.sendMessage(m.chat, {
+              [mt]: latest.buffer,
+              caption: '🔓 *Last View-Once Media Recovered by Saqib-MD*',
+            });
+            await m.react('✅');
+            return;
+          }
+        } catch (_) {}
+      }
+
       if (m.quoted && (isViewOnce || isMedia)) {
         try {
           await m.react('⏳');
@@ -92,8 +119,13 @@ module.exports = {
           }
           await m.react('✅');
         } catch (e) {
+          console.error(`❌ ${command} failed:`, e && e.message ? e.message : e);
           await m.react('❌');
-          await m.reply('❌ Failed to download ViewOnce media: ' + (e.message || 'unknown error'));
+          const msg = String((e && e.message) || 'unknown error');
+          const hint = /empty media key|media key/i.test(msg)
+            ? '\n\n_WhatsApp already destroyed the media key for this message. Reply with .vv within a few minutes of it arriving, or turn on *.autovv on* so it is saved automatically._'
+            : '';
+          await m.reply(`❌ Failed to recover View-Once media.\n_Reason:_ ${msg.slice(0, 150)}${hint}`);
         }
       } else {
         await m.reply(`💡 Reply to a *View-Once* image or video with *${prefix}${command}*.\n• *${prefix}vv* (Recover it in the current chat)\n• *${prefix}vv2* (Send it secretly to your personal inbox)`);

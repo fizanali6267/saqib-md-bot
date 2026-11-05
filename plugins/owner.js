@@ -199,6 +199,11 @@ module.exports = {
         }
 
         // ---- 2) Native WhatsApp block (best effort) -----------------------
+        // IMPORTANT: `updateBlockStatus` resolves even when WhatsApp silently
+        // rejects the request, and it can only address a real phone-number JID.
+        // The old code replied "has been blocked!" BEFORE checking anything,
+        // so the user was told the contact was blocked while nothing happened.
+        // We now call it, then VERIFY against the server's own blocklist.
         let waOk = false;
         let waErr = null;
         for (const jid of unique) {
@@ -211,25 +216,50 @@ module.exports = {
           }
         }
 
-        if (action === 'block') {
-          await m.reply(
-            `🚫 *@${num}* has been blocked!`,
-            { mentions: [`${num}@s.whatsapp.net`] }
-          );
-        } else {
-          await m.reply(
-            `✅ *@${num}* has been unblocked!`,
-            { mentions: [`${num}@s.whatsapp.net`] }
-          );
-        }
+        // Verify with the authoritative server-side blocklist.
+        let verified = null; // true / false / null (couldn't check)
+        try {
+          if (typeof sock.fetchBlocklist === 'function') {
+            const serverList = await sock.fetchBlocklist();
+            const wanted = new Set(
+              (serverList || []).map((j) => String(j).split('@')[0].split(':')[0].replace(/[^0-9]/g, ''))
+            );
+            const targetDigits = String(num).replace(/[^0-9]/g, '');
+            verified = wanted.has(targetDigits);
+          }
+        } catch (_) { verified = null; }
 
-        // Only surface a warning when BOTH paths failed.
-        if (!waOk && !listChanged) {
-          const detail = (waErr && (waErr.message || waErr.output?.payload?.message)) || 'unknown error';
-          await m.reply(
-            `⚠️ *Note:* WhatsApp-level ${action} failed (${detail}), ` +
-            `but the bot blocklist was updated.`
-          );
+        const waConfirmed = verified === true;
+        const waFailed = verified === false || (!waOk && verified !== true);
+
+        if (action === 'block') {
+          if (waConfirmed) {
+            await m.reply(`🚫 *@${num}* has been blocked on WhatsApp.`, {
+              mentions: [`${num}@s.whatsapp.net`],
+            });
+          } else if (listChanged) {
+            await m.reply(
+              `🛡️ *@${num}* is now blocked inside the bot.*\n\n` +
+              `⚠️ WhatsApp-level block did not confirm` +
+              (waErr ? ` (${(waErr.message || '').slice(0, 80)})` : '') +
+              `.\nThe contact can still message your number, but Saqib-MD will ignore them completely.`,
+              { mentions: [`${num}@s.whatsapp.net`] }
+            );
+          } else {
+            await m.reply(
+              `❌ *Could not block @${num}.*\n\n` +
+              `WhatsApp rejected the request and the bot blocklist could not be saved.` +
+              (waErr ? `\n_Reason:_ ${(waErr.message || '').slice(0, 120)}` : '')
+            );
+          }
+        } else {
+          if (waConfirmed === false && !listChanged) {
+            await m.reply(`❌ *@${num}* was not in the blocklist — nothing to unblock.`);
+          } else {
+            await m.reply(`✅ *@${num}* has been unblocked.`, {
+              mentions: [`${num}@s.whatsapp.net`],
+            });
+          }
         }
         break;
       }
