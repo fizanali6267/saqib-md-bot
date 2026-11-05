@@ -164,7 +164,7 @@ const PERSISTED_KEYS = [
 // Bump this whenever the factory defaults change. A settings.json written by an
 // older version is then ignored once, so the bot really starts from the new
 // defaults instead of silently keeping stale toggles from a previous deploy.
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 
 const loadSettings = () => {
   try {
