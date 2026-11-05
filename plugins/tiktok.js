@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { execFile } = require('child_process');
 const config = require('../config');
 
 /**
@@ -14,6 +15,58 @@ const config = require('../config');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+/**
+ * Some hosts (Cloudflare-fronted) reject Node's TLS fingerprint from certain
+ * datacenter IPs with "tlsv1 alert internal error". curl uses a completely
+ * different TLS stack, so we retry with curl before giving up. This keeps the
+ * TikTok commands working on Railway where plain axios fails the handshake.
+ */
+function curlJson(url, timeoutSec) {
+  return new Promise((resolve, reject) => {
+    execFile('curl', [
+      '-s', '--compressed',
+      '--max-time', String(timeoutSec || 20),
+      '-A', UA,
+      '-H', 'Accept: application/json',
+      '-H', 'Referer: https://tikwm.com/',
+      url
+    ], { maxBuffer: 8 * 1024 * 1024, timeout: (timeoutSec || 20) * 1000 + 5000 }, (err, stdout) => {
+      if (err) return reject(err);
+      const txt = String(stdout || '').trim();
+      if (!txt) return reject(new Error('empty response'));
+      try {
+        resolve(JSON.parse(txt));
+      } catch (e) {
+        reject(new Error('non-JSON response'));
+      }
+    });
+  });
+}
+
+function qs(params) {
+  const sp = new URLSearchParams();
+  for (const k of Object.keys(params)) {
+    if (params[k] !== undefined && params[k] !== null) sp.append(k, String(params[k]));
+  }
+  return sp.toString();
+}
+
+async function getJson(baseUrl, params, timeoutSec) {
+  const url = baseUrl + '?' + qs(params);
+  try {
+    const res = await axios.get(url, {
+      timeout: (timeoutSec || 20) * 1000,
+      headers: { 'User-Agent': UA, Accept: 'application/json', Referer: 'https://tikwm.com/' },
+      validateStatus: () => true
+    });
+    if (res.status === 200 && res.data && typeof res.data === 'object') return res.data;
+    throw new Error('HTTP ' + res.status);
+  } catch (e) {
+    // TLS / Cloudflare fallback
+    return curlJson(url, timeoutSec);
+  }
+}
+
 const PROVIDERS = [  {
     // Works when /api/feed/search is Cloudflare-blocked (which is almost always
     // from datacenter IPs). We resolve the keyword to a TikTok hashtag id and
@@ -22,20 +75,12 @@ const PROVIDERS = [  {
     name: 'tikwm-challenge',
     search: async (q, count) => {
       const keyword = String(q).trim().replace(/^#/, '').replace(/\s+/g, '');
-      const info = await axios.get('https://tikwm.com/api/challenge/info', {
-        params: { challenge_name: keyword },
-        timeout: 12000,
-        headers: { 'User-Agent': UA, Accept: 'application/json' }
-      });
-      const id = info.data && info.data.data && info.data.data.id;
+      const info = await getJson('https://tikwm.com/api/challenge/info', { challenge_name: keyword }, 15);
+      const id = info && info.data && info.data.id;
       if (!id) throw new Error('no challenge id');
 
-      const posts = await axios.get('https://tikwm.com/api/challenge/posts', {
-        params: { challenge_id: id, count: Math.max(Number(count) || 10, 10) },
-        timeout: 15000,
-        headers: { 'User-Agent': UA, Accept: 'application/json', Referer: 'https://tikwm.com/' }
-      });
-      const list = posts.data && posts.data.data && posts.data.data.videos;
+      const posts = await getJson('https://tikwm.com/api/challenge/posts', { challenge_id: id, count: Math.max(Number(count) || 10, 10) }, 18);
+      const list = posts && posts.data && posts.data.videos;
       if (!Array.isArray(list) || !list.length) throw new Error('empty');
 
       return list.slice(0, count).map((v) => ({
@@ -52,12 +97,8 @@ const PROVIDERS = [  {
   },  {
     name: 'tikwm',
     search: async (q, count) => {
-      const res = await axios.get('https://www.tikwm.com/api/feed/search', {
-        params: { keywords: q, count, region: 'PK' },
-        timeout: 12000,
-        headers: { 'User-Agent': UA, Accept: 'application/json' }
-      });
-      const list = res.data?.data?.videos;
+      const res = await getJson('https://www.tikwm.com/api/feed/search', { keywords: q, count, region: 'PK' }, 15);
+      const list = res && res.data && res.data.videos;
       if (!Array.isArray(list) || !list.length) throw new Error('empty');
       return list.map((v) => ({
         id: v.video_id,
@@ -71,12 +112,8 @@ const PROVIDERS = [  {
       }));
     },
     download: async (url) => {
-      const res = await axios.get('https://www.tikwm.com/api/', {
-        params: { url, hd: 1 },
-        timeout: 15000,
-        headers: { 'User-Agent': UA, Accept: 'application/json' }
-      });
-      const d = res.data?.data;
+      const res = await getJson('https://www.tikwm.com/api/', { url, hd: 1 }, 18);
+      const d = res && res.data;
       if (!d || !d.play) throw new Error('no media');
       return {
         video: d.hdplay || d.play,
@@ -91,12 +128,8 @@ const PROVIDERS = [  {
     // error, so the command always returns something useful.
     name: 'tikwm-region',
     search: async (q, count) => {
-      const res = await axios.get('https://tikwm.com/api/feed/list', {
-        params: { region: 'PK', count: Math.max(Number(count) || 10, 10) },
-        timeout: 15000,
-        headers: { 'User-Agent': UA, Accept: 'application/json' }
-      });
-      const list = res.data && res.data.data;
+      const res = await getJson('https://tikwm.com/api/feed/list', { region: 'PK', count: Math.max(Number(count) || 10, 10) }, 18);
+      const list = res && res.data;
       if (!Array.isArray(list) || !list.length) throw new Error('empty');
       return list.slice(0, count).map((v) => ({
         id: v.video_id,
@@ -112,12 +145,8 @@ const PROVIDERS = [  {
   },  {
     name: 'tiklydown',
     search: async (q, count) => {
-      const res = await axios.get('https://api.tiklydown.eu.org/api/search', {
-        params: { q },
-        timeout: 12000,
-        headers: { 'User-Agent': UA, Accept: 'application/json' }
-      });
-      const list = res.data?.videos || res.data?.data || res.data?.result;
+      const res = await getJson('https://api.tiklydown.eu.org/api/search', { q }, 15);
+      const list = res && (res.videos || res.data || res.result);
       if (!Array.isArray(list) || !list.length) throw new Error('empty');
       return list.slice(0, count).map((v) => ({
         id: v.id || v.video_id,
