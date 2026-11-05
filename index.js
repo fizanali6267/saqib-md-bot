@@ -152,8 +152,14 @@ app.get('/ttcheck', async (req, res) => {
       const { execFileSync } = require('child_process');
       const target = String(req.query.raw);
       try {
-        const out = execFileSync('curl', ['-sS', '-o', '/dev/null', '-w', 'status=%{http_code} ip=%{remote_ip} tls=%{ssl_verify_result} time=%{time_total}', '--max-time', '20', '-A', 'Mozilla/5.0', target], { encoding: 'utf8', timeout: 25000 });
-        return res.json({ ok: true, raw: target, probe: out.trim() });
+        const out = execFileSync('curl', ['-sS', '-o', '/dev/null', '-w', 'status=%{http_code} ip=%{remote_ip} tls=%{ssl_verify_result} time=%{time_total}', '--max-time', '25', '-A', 'Mozilla/5.0', target], { encoding: 'utf8', timeout: 30000 });
+        const payload = { ok: true, raw: target, probe: out.trim() };
+        if (req.query.body === '1') {
+          try {
+            payload.body = execFileSync('curl', ['-sS', '--max-time', '25', '-A', 'Mozilla/5.0', target], { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 }).slice(0, 600);
+          } catch (e2) { payload.bodyError = String(e2.message).slice(0, 200); }
+        }
+        return res.json(payload);
       } catch (e) {
         return res.json({ ok: false, raw: target, error: String(e.message).slice(0, 300) });
       }
