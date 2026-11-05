@@ -439,6 +439,7 @@ let isStarting = false;          // true while a socket is being created
 let reconnectTimer = null;       // pending auto-reconnect timer
 let reconnectAttempts = 0;       // exponential backoff counter
 let lastOpenAt = 0;              // timestamp of last successful connection
+let lastActivityAt = 0;          // timestamp of last proven live activity (creds/msgs/presence)
 let watchdogTimer = null;        // 24/7 connection health watchdog
 let suppressReconnectUntil = 0;  // ignore close events until this timestamp (manual reload)
 
@@ -500,10 +501,21 @@ function startWatchdog() {
       if (Date.now() < suppressReconnectUntil) return; // manual reload in progress
       if (reconnectTimer) return;                      // reconnect already pending
       const ws = currentSock && currentSock.ws;
-      const state = ws && typeof ws.readyState === 'number' ? ws.readyState : -1;
+      // IMPORTANT: Baileys exposes `sock.ws` as a WebSocketClient wrapper which
+      // has an `isOpen` getter — NOT a `readyState` property. Checking
+      // `ws.readyState` always yields undefined and made the watchdog kill a
+      // perfectly healthy connection every ~3 minutes. Support both shapes.
+      let alive = false;
+      if (ws) {
+        if (typeof ws.isOpen === 'boolean') alive = ws.isOpen;
+        else if (typeof ws.readyState === 'number') alive = ws.readyState === 1;
+        else alive = true; // unknown wrapper — do not kill a live socket
+      }
       const offlineFor = lastOpenAt ? Date.now() - lastOpenAt : 0;
-      // readyState 1 = OPEN. Anything else means the link is down.
-      if (state !== 1 && offlineFor > 120000) {
+      const idleFor = lastActivityAt ? Date.now() - lastActivityAt : offlineFor;
+      // Restart only when the socket is genuinely closed AND we have had no
+      // proven activity for a long while (avoids false-positive restarts).
+      if (!alive && offlineFor > 120000 && idleFor > 300000) {
         console.log('\u{1F6DF} Watchdog: socket is down, forcing restart...');
         try { currentSock && currentSock.end(undefined); } catch (_) {}
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -668,7 +680,7 @@ async function startBot() {
     return sent;
   };
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', () => { lastActivityAt = Date.now(); try { saveCreds(); } catch (_) {} });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
@@ -709,6 +721,7 @@ async function startBot() {
       console.log(`✨ ${config.BOT_NAME} connected and ready to serve!`);
       reconnectAttempts = 0;
       lastOpenAt = Date.now();
+      lastActivityAt = Date.now();
       startWatchdog();
 
       // Remember our own LID <-> phone pair (needed for self-chat replies).
@@ -726,6 +739,7 @@ async function startBot() {
         if (config.ALWAYS_ONLINE) {
           try {
             await sock.sendPresenceUpdate('available');
+            lastActivityAt = Date.now();
           } catch (_) {}
         }
       }, 25000);
@@ -760,6 +774,7 @@ async function startBot() {
 
   // Message Handler
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    lastActivityAt = Date.now();
     // CRITICAL FIX: "Message Yourself" (apne inbox) ke messages WhatsApp
     // `type: 'append'` ke saath bhejta hai, groups/DM `type: 'notify'`.
     // Pehle sirf 'notify' allow tha, is liye self-chat mein koi command
