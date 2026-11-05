@@ -142,7 +142,7 @@ app.get('/diag', async (req, res) => {
     const key = String(req.query.key || '').replace(/[^0-9]/g, '');
     const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
     if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
-    const out = await require('./lib/diag').run();
+    const out = await require('./lib/diag').run({ deep: String(req.query.deep || '') === '1' });
     res.json(out);
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
