@@ -135,6 +135,33 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Owner-only HTTP probe (used to find downloader endpoints that work from
+// this datacenter IP). POST JSON: { url, method, headers, body, max }
+app.post('/probe', async (req, res) => {
+  try {
+    const key = String(req.query.key || req.body?.key || '').replace(/[^0-9]/g, '');
+    const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+    if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
+    const axios = require('axios');
+    const { url, method = 'GET', headers = {}, body = null, max = 600 } = req.body || {};
+    if (!url) return res.status(400).json({ ok: false, error: 'url required' });
+    const t0 = Date.now();
+    try {
+      const r = await axios({
+        url, method, headers: Object.assign({ 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }, headers),
+        data: body, timeout: 30000, maxRedirects: 5, validateStatus: () => true,
+        responseType: 'text', transformResponse: [(d) => d],
+      });
+      const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+      return res.json({ ok: r.status >= 200 && r.status < 400, status: r.status, ms: Date.now() - t0, len: text.length, body: String(text).slice(0, max) });
+    } catch (e) {
+      return res.json({ ok: false, status: e.response?.status || null, ms: Date.now() - t0, error: String(e.message).slice(0, 200) });
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // Owner-only live self-diagnostics for the 18-bug fix set.
 // Usage: /diag?key=<owner number>
 app.get('/diag', async (req, res) => {
