@@ -135,6 +135,20 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Build/version probe so a deploy can be verified from outside.
+app.get('/version', (req, res) => {
+  res.json({
+    ok: true,
+    build: 'fixes-18-bugs',
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
+    branch: process.env.RAILWAY_GIT_BRANCH || null,
+    startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    uptime: process.uptime(),
+    node: process.version,
+    features: ['lid-resolve', 'sticker-exif', 'admin-detect', 'ocr-tesseract', 'emojimix-gstatic', 'yahoo-search', 'wiktionary', 'yt-search', 'aptoide-apk', 'tikwm-tiktok', 'slap-caption', 'ghost-format', 'forward-raw', 'vv-viewonce', 'adhan-archive']
+  });
+});
+
 // Live diagnostics: proves the socket can actually deliver to a given JID.
 // Usage: /selftest?jid=92300...  (defaults to the owner's own number)
 // Owner-only: verify the TikTok search cascade from the live server IP.
