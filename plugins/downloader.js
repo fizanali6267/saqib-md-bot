@@ -105,6 +105,7 @@ function humanSize(bytes) {
 }
 
 module.exports = {
+  _internal: { youtubeSearch, aptoideLookup, tikwmLookup, humanSize },
   name: 'downloader',
   commands: ['song', 'ytmp3', 'play', 'video', 'ytmp4', 'yts', 'tiktok', 'tt', 'fb', 'facebook', 'ig', 'insta', 'apk', 'mediafire'],
   execute: async (sock, m, { command, args, prefix }) => {

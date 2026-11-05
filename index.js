@@ -135,6 +135,20 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Owner-only live self-diagnostics for the 18-bug fix set.
+// Usage: /diag?key=<owner number>
+app.get('/diag', async (req, res) => {
+  try {
+    const key = String(req.query.key || '').replace(/[^0-9]/g, '');
+    const owner = String(config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+    if (!owner || key !== owner) return res.status(403).json({ ok: false, error: 'forbidden' });
+    const out = await require('./lib/diag').run();
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // Build/version probe so a deploy can be verified from outside.
 app.get('/version', (req, res) => {
   res.json({

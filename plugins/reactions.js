@@ -241,6 +241,7 @@ function gifToMp4(gifBuffer) {
 }
 
 module.exports = {
+  _internal: { CAPTIONS, REACTIONS },
   name: 'reactions',
   commands: Object.keys(REACTIONS),
   execute: async (sock, m, { command, args, prefix }) => {

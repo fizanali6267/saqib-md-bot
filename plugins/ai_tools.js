@@ -119,6 +119,7 @@ async function wiktionaryDefine(word) {
 }
 
 module.exports = {
+  _internal: { yahooSearch, bingSearch, webSearch, wiktionaryDefine, stripHtml },
   name: 'ai_tools',
   commands: ['ai', 'gpt', 'gemini', 'imagine', 'weather', 'google', 'calc', 'shorturl', 'define'],
   execute: async (sock, m, { command, args, prefix }) => {

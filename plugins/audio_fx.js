@@ -65,6 +65,7 @@ async function findEmojiKitchen(e1, e2) {
 }
 
 module.exports = {
+  _internal: { emojiCodepoints, probeKitchen, findEmojiKitchen },
   name: 'audio_fx',
   commands: ['bass', 'nightcore', 'slowed', 'reverb', 'reverse', 'mute', 'compress', 'circle', 'round', 'emojimix'],
   execute: async (sock, m, { command, args, prefix }) => {
