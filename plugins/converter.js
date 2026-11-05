@@ -38,6 +38,7 @@ function runOcr(buffer) {
 }
 
 module.exports = {
+  _internal: { runOcr },
   name: 'converter',
   commands: ['sticker', 's', 'take', 'steal', 'toimg', 'tovideo', 'tomp3', 'say', 'ttsvoice', 'translate', 'tr', 'ocr'],
   execute: async (sock, m, { command, args, prefix }) => {
